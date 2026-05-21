@@ -74,12 +74,15 @@ export class SPHSimulation {
     this.cellEntries = new Int32Array(this.n);
     this.particleHash = new Int32Array(this.n);
 
-    // Init positions (dam break)
+    // Init positions (centered block, drops from above)
     const countPerAxis = Math.ceil(Math.cbrt(particleCount));
+    const blockWidth = (countPerAxis - 1) * spacing;
+    const offsetX = -blockWidth / 2;
+    const offsetZ = -blockWidth / 2;
     for (let i = 0; i < this.n; i++) {
-      this.posX[i] = (i % countPerAxis) * spacing - containerSize.x * 0.25;
+      this.posX[i] = (i % countPerAxis) * spacing + offsetX;
       this.posY[i] = (Math.floor(i / countPerAxis) % countPerAxis) * spacing + spacing;
-      this.posZ[i] = Math.floor(i / (countPerAxis * countPerAxis)) * spacing - containerSize.z * 0.25;
+      this.posZ[i] = Math.floor(i / (countPerAxis * countPerAxis)) * spacing + offsetZ;
     }
 
     // Create mesh with identity matrices
@@ -103,13 +106,17 @@ export class SPHSimulation {
     return { velX: this.velX, velY: this.velY, velZ: this.velZ };
   }
 
+  getXSPH() {
+    return { xsphX: this.xsphX, xsphY: this.xsphY, xsphZ: this.xsphZ };
+  }
+
   setInstancedRendering(enabled: boolean) {
     this.useInstancedRendering = enabled;
     this.mesh.visible = enabled;
   }
 
   step(_dt: number) {
-    const fixedDt = 0.008;
+    const fixedDt = 0.005;
     const substeps = Math.min(Math.ceil(_dt / fixedDt), 2);
 
     this.buildGrid();
@@ -130,11 +137,14 @@ export class SPHSimulation {
     const n = this.n;
     this.cellCount.fill(0);
 
+    const halfX = this.containerSize.x / 2;
+    const halfZ = this.containerSize.z / 2;
+
     // Count particles per cell
     for (let i = 0; i < n; i++) {
-      const cx = Math.floor(this.posX[i] * INV_CELL);
+      const cx = Math.floor((this.posX[i] + halfX) * INV_CELL);
       const cy = Math.floor(this.posY[i] * INV_CELL);
-      const cz = Math.floor(this.posZ[i] * INV_CELL);
+      const cz = Math.floor((this.posZ[i] + halfZ) * INV_CELL);
       const h = this.hashCell(cx, cy, cz);
       this.particleHash[i] = h;
       this.cellCount[h]++;
@@ -170,9 +180,9 @@ export class SPHSimulation {
       const xi = px[i], yi = py[i], zi = pz[i];
       let rho = 0;
 
-      const cxi = Math.floor(xi * INV_CELL);
+      const cxi = Math.floor((xi + halfX) * INV_CELL);
       const cyi = Math.floor(yi * INV_CELL);
-      const czi = Math.floor(zi * INV_CELL);
+      const czi = Math.floor((zi + halfZ) * INV_CELL);
 
       for (let dx = -1; dx <= 1; dx++) {
         for (let dy = -1; dy <= 1; dy++) {
@@ -243,9 +253,9 @@ export class SPHSimulation {
       let fxi = 0, fyi = SPH.gravity * rhoi, fzi = 0;
       let xsxi = 0, xsyi = 0, xszi = 0;
 
-      const cxi = Math.floor(xi * INV_CELL);
+      const cxi = Math.floor((xi + halfX) * INV_CELL);
       const cyi = Math.floor(yi * INV_CELL);
-      const czi = Math.floor(zi * INV_CELL);
+      const czi = Math.floor((zi + halfZ) * INV_CELL);
 
       for (let dx = -1; dx <= 1; dx++) {
         for (let dy = -1; dy <= 1; dy++) {

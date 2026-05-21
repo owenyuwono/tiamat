@@ -55,12 +55,12 @@ void main() {
   float tNear = max(tHit.x, 0.0);
   float tFar = tHit.y;
 
-  float stepSize = 0.015;
+  float stepSize = 0.025;
   float t = tNear + stepSize * 0.5;
   bool hit = false;
   vec3 hitPos;
 
-  for (int i = 0; i < 256; i++) {
+  for (int i = 0; i < 400; i++) {
     if (t > tFar) break;
     vec3 p = ro + rd * t;
     float d = sampleDensity(p);
@@ -90,15 +90,15 @@ void main() {
   vec3 L = normalize(uLightDir);
   vec3 H = normalize(L + V);
 
-  // Velocity-based foam
+  // Impact foam from XSPH divergence (high when particles collide, zero during free fall)
   vec2 rg = sampleField(hitPos);
-  float avgVelocity = rg.r > 0.001 ? rg.g / rg.r : 0.0;
-  float velocityFoam = smoothstep(0.3, 1.5, avgVelocity);
+  float avgImpact = rg.r > 0.001 ? rg.g / rg.r : 0.0;
+  float impactFoam = smoothstep(0.2, 1.5, avgImpact);
 
-  // Thin-region foam from gradient magnitude
-  float thinFoam = 1.0 - smoothstep(0.3, 1.2, gradLen);
+  // Restrict foam to upward-facing surfaces (water top, not side walls or bottom)
+  float topSurface = smoothstep(-0.1, 0.5, N.y);
 
-  float foam = clamp(max(velocityFoam, thinFoam * 0.6), 0.0, 1.0);
+  float foam = clamp(impactFoam * topSurface, 0.0, 1.0);
 
   // Fresnel (Schlick, water F0 ~ 0.02)
   float cosTheta = max(dot(N, V), 0.0);
@@ -117,9 +117,12 @@ void main() {
   }
   float depthFactor = 1.0 - exp(-depth * 3.0);
 
-  vec3 deepColor = vec3(0.05, 0.2, 0.45);
-  vec3 shallowColor = vec3(0.3, 0.65, 0.9);
+  vec3 deepColor = vec3(0.02, 0.12, 0.42);
+  vec3 shallowColor = vec3(0.1, 0.4, 0.9);
   vec3 waterColor = mix(shallowColor, deepColor, depthFactor);
+
+  // Blue absorption — water absorbs red/green more than blue
+  waterColor *= vec3(0.8, 0.88, 1.0);
 
   // Blend foam into water color — bright white foam
   vec3 foamColor = vec3(1.0);
@@ -129,13 +132,16 @@ void main() {
   float NdotL = max(dot(N, L), 0.0);
   float spec = pow(max(dot(N, H), 0.0), mix(128.0, 16.0, foam));
 
-  vec3 ambient = waterColor * 0.5;
+  vec3 ambient = waterColor * mix(0.5, 0.9, foam);
   vec3 diffuse = waterColor * NdotL * 0.6;
   vec3 specular = uLightColor * spec * mix(2.0, 0.5, foam);
   vec3 color = ambient + diffuse + specular;
 
-  vec3 finalColor = mix(uBgColor * 0.6, color, mix(0.8, 1.0, fresnel));
-  finalColor += fresnel * uBgColor * 0.3;
+  // Blue-tinted fresnel for water, neutral for foam
+  vec3 reflColor = mix(mix(uBgColor, vec3(0.3, 0.5, 0.9), 0.4), uBgColor, foam);
+  color = mix(color, reflColor, fresnel * 0.4);
 
-  gl_FragColor = vec4(finalColor, 1.0);
+  float alpha = clamp(depthFactor * 0.85 + 0.15 + foam, 0.0, 1.0);
+
+  gl_FragColor = vec4(color, alpha);
 }

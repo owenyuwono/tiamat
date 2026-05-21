@@ -8,6 +8,7 @@ export class WaterRenderer {
   private texture: THREE.Data3DTexture;
   private material: THREE.ShaderMaterial;
   private mesh: THREE.Mesh;
+  private texData: Float32Array;
 
   constructor(
     scene: THREE.Scene,
@@ -19,6 +20,7 @@ export class WaterRenderer {
     const splatRadius = options?.splatRadius ?? 0.1;
 
     const texData = new Float32Array(res * res * res * 2);
+    this.texData = texData;
     this.texture = new THREE.Data3DTexture(texData, res, res, res);
     this.texture.format = THREE.RGFormat;
     this.texture.type = THREE.FloatType;
@@ -52,8 +54,8 @@ export class WaterRenderer {
         uResolution: { value: new THREE.Vector2() },
       },
       side: THREE.BackSide,
-      transparent: false,
-      depthWrite: true,
+      transparent: true,
+      depthWrite: false,
     });
 
     const size = new THREE.Vector3().subVectors(domainMax, domainMin);
@@ -79,6 +81,23 @@ export class WaterRenderer {
     this.material.uniforms.uLightDir.value.copy(lightDir);
     this.material.uniforms.uLightColor.value.copy(light.color);
 
+    const invVP = this.material.uniforms.uInvViewProjection.value as THREE.Matrix4;
+    invVP.copy(camera.projectionMatrix).multiply(camera.matrixWorldInverse).invert();
+    this.material.uniforms.uResolution.value.copy(rendererSize);
+  }
+
+  getTextureData(): Float32Array {
+    return this.texData;
+  }
+
+  markTextureNeedsUpdate(): void {
+    this.texture.needsUpdate = true;
+  }
+
+  updateUniforms(light: THREE.DirectionalLight, camera: THREE.Camera, rendererSize: THREE.Vector2): void {
+    const lightDir = light.position.clone().normalize();
+    this.material.uniforms.uLightDir.value.copy(lightDir);
+    this.material.uniforms.uLightColor.value.copy(light.color);
     const invVP = this.material.uniforms.uInvViewProjection.value as THREE.Matrix4;
     invVP.copy(camera.projectionMatrix).multiply(camera.matrixWorldInverse).invert();
     this.material.uniforms.uResolution.value.copy(rendererSize);

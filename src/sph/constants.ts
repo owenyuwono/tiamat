@@ -1,9 +1,9 @@
 export const SPH = {
   smoothingRadius: 0.1,
   restDensity: 1000,
-  stiffness: 50,
+  stiffness: 150,
   taitGamma: 7,
-  viscosity: 1.5,
+  viscosity: 2.5,
   gravity: -9.81,
   boundaryDamping: -0.3,
   maxVelocity: 5.0,
