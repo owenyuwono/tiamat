@@ -1,19 +1,17 @@
 import './style.css';
+import './ui/panels.css';
 import * as THREE from 'three';
-import Stats from 'stats.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { SPHSimulation } from './sph/simulation';
 import { WaterRenderer } from './rendering/WaterRenderer';
 import { GPUCompute } from './gpu/GPUCompute';
 import { GPUProfiler } from './gpu/GPUProfiler';
 import { WebGPURenderer } from './gpu/WebGPURenderer';
+import { createDefaultConfig } from './ui/SimConfig';
+import { ControlPanel } from './ui/ControlPanel';
+import { StatsPanel } from './ui/StatsPanel';
 
 const CONTAINER_SIZE = new THREE.Vector3(4, 4, 4);
-const PARTICLE_COUNT = 100000;
-
-const stats = new Stats();
-stats.showPanel(0);
-document.body.appendChild(stats.dom);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xd0d8e8);
@@ -25,19 +23,34 @@ camera.lookAt(0, 2, 0);
 async function init() {
   const domainMin = new THREE.Vector3(-CONTAINER_SIZE.x / 2, 0, -CONTAINER_SIZE.z / 2);
   const domainMax = new THREE.Vector3(CONTAINER_SIZE.x / 2, CONTAINER_SIZE.y, CONTAINER_SIZE.z / 2);
+  const config = createDefaultConfig();
 
-  const sim = new SPHSimulation(scene, PARTICLE_COUNT, CONTAINER_SIZE);
-  sim.setInstancedRendering(false);
-
-  const gpuCompute = await GPUCompute.create(
-    PARTICLE_COUNT, CONTAINER_SIZE, 80, domainMin, domainMax, 0.1
-  );
-
+  let gpuCompute: GPUCompute | null = null;
   let glRenderer: THREE.WebGLRenderer | null = null;
   let webgpuRenderer: WebGPURenderer | null = null;
   let waterRenderer: WaterRenderer | null = null;
   let profiler: GPUProfiler | null = null;
   let controls: OrbitControls;
+
+  let savedPosX = new Float32Array(0);
+  let savedPosY = new Float32Array(0);
+  let savedPosZ = new Float32Array(0);
+
+  function generatePositions(count: number) {
+    const sim = new SPHSimulation(scene, count, CONTAINER_SIZE);
+    sim.setInstancedRendering(false);
+    const p = sim.getParticlePositions();
+    savedPosX = new Float32Array(p.posX);
+    savedPosY = new Float32Array(p.posY);
+    savedPosZ = new Float32Array(p.posZ);
+    return sim;
+  }
+
+  let sim = generatePositions(config.particleCount);
+
+  gpuCompute = await GPUCompute.create(
+    config.particleCount, CONTAINER_SIZE, 80, domainMin, domainMax, 0.1
+  );
 
   if (gpuCompute) {
     webgpuRenderer = new WebGPURenderer(
@@ -47,18 +60,16 @@ async function init() {
       gpuCompute.getFieldResolution(),
       domainMin, domainMax, CONTAINER_SIZE,
     );
-    webgpuRenderer.resize(window.innerWidth, window.innerHeight, Math.min(window.devicePixelRatio, 2), 0.5);
+    webgpuRenderer.resize(window.innerWidth, window.innerHeight, Math.min(window.devicePixelRatio, 2), config.renderScale);
     controls = new OrbitControls(camera, webgpuRenderer.canvas);
 
     const device = gpuCompute.getDevice();
     if (device.features.has('timestamp-query')) {
       profiler = new GPUProfiler(device);
-      profiler.setParticleCount(PARTICLE_COUNT);
-      console.log('GPU timestamp profiling enabled');
+      profiler.setParticleCount(config.particleCount);
     }
 
-    const p = sim.getParticlePositions();
-    gpuCompute.uploadInitialPositions(p.posX, p.posY, p.posZ);
+    gpuCompute.uploadInitialPositions(savedPosX, savedPosY, savedPosZ);
     console.log('WebGPU render + compute enabled');
   } else {
     glRenderer = new THREE.WebGLRenderer({ antialias: true });
@@ -88,11 +99,50 @@ async function init() {
   controls.enableDamping = true;
   controls.target.set(0, 2, 0);
 
+  async function reinitGPU(count: number) {
+    if (!gpuCompute || !webgpuRenderer) return;
+    const device = gpuCompute.getDevice();
+
+    gpuCompute.dispose();
+    gpuCompute = new GPUCompute(
+      device, count, CONTAINER_SIZE, 80, domainMin, domainMax, 0.1,
+    );
+
+    sim = generatePositions(count);
+    gpuCompute.uploadInitialPositions(savedPosX, savedPosY, savedPosZ);
+    webgpuRenderer.rebindComputeBuffers(
+      gpuCompute.getDensityFieldBuffer(),
+      gpuCompute.getParamsBuffer(),
+    );
+    profiler?.setParticleCount(count);
+  }
+
+  const isGPU = !!gpuCompute;
+  const statsPanel = new StatsPanel();
+  // @ts-expect-error kept for dispose reference
+  const _controlPanel = new ControlPanel(config, {
+    gpuMode: isGPU,
+    onReset: () => {
+      if (gpuCompute) {
+        gpuCompute.uploadInitialPositions(savedPosX, savedPosY, savedPosZ);
+        gpuCompute.resetVelocities();
+      }
+    },
+    onRenderScaleChange: (scale: number) => {
+      if (webgpuRenderer) {
+        webgpuRenderer.resize(window.innerWidth, window.innerHeight, Math.min(window.devicePixelRatio, 2), scale);
+      }
+    },
+    onParticleCountChange: (count: number) => {
+      reinitGPU(count);
+    },
+  });
+
   window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     if (webgpuRenderer) {
-      webgpuRenderer.resize(window.innerWidth, window.innerHeight, Math.min(window.devicePixelRatio, 2), 0.5);
+      webgpuRenderer.resize(window.innerWidth, window.innerHeight, Math.min(window.devicePixelRatio, 2), config.renderScale);
     }
     if (glRenderer) {
       glRenderer.setSize(window.innerWidth, window.innerHeight);
@@ -105,30 +155,37 @@ async function init() {
   let lastTime = performance.now();
 
   async function animate() {
-    stats.begin();
     const now = performance.now();
-    const dt = Math.min((now - lastTime) / 1000, 0.016);
+    const dtMs = Math.min(now - lastTime, 16);
+    const dt = dtMs / 1000;
     lastTime = now;
 
     const fixedDt = 0.008;
-    const substeps = Math.min(Math.ceil(dt / fixedDt), 3);
+    const substeps = config.paused ? 0 : Math.min(Math.ceil(dt / fixedDt), config.substepLimit);
 
     controls.update();
     camera.updateMatrixWorld();
 
     if (gpuCompute && webgpuRenderer) {
+      gpuCompute.updateSimConfig(config);
+      webgpuRenderer.setThreshold(config.threshold);
+
       profiler?.beginFrame();
       profiler?.setSubsteps(substeps);
       const device = gpuCompute.getDevice();
       const encoder = device.createCommandEncoder();
-      gpuCompute.encodeStep(encoder, substeps, profiler);
+      if (!config.paused) {
+        gpuCompute.encodeStep(encoder, substeps, profiler);
+      }
       webgpuRenderer.encodeFrame(encoder, camera, profiler);
       profiler?.resolve(encoder);
       device.queue.submit([encoder.finish()]);
       await device.queue.onSubmittedWorkDone();
       await profiler?.readback();
     } else if (glRenderer && waterRenderer) {
-      sim.step(dt);
+      if (!config.paused) {
+        sim.step(dt);
+      }
       const particles = sim.getParticlePositions();
       const xs = sim.getXSPH();
       glRenderer.getDrawingBufferSize(rendererSize);
@@ -140,7 +197,8 @@ async function init() {
       glRenderer.render(scene, camera);
     }
 
-    stats.end();
+    statsPanel.update(dtMs, profiler?.getSnapshot() ?? null, config.particleCount, substeps);
+
     requestAnimationFrame(animate);
   }
 

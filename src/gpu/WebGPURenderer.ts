@@ -15,6 +15,7 @@ export class WebGPURenderer {
   private linearSampler: GPUSampler;
 
   private bufferToTexPipeline: GPUComputePipeline;
+  private bufferToTexBindGroupLayout: GPUBindGroupLayout;
   private bufferToTexBindGroup: GPUBindGroup;
   private fieldResolution: number;
 
@@ -80,7 +81,7 @@ export class WebGPURenderer {
 
     // Buffer-to-texture compute pipeline
     const b2tModule = device.createShaderModule({ code: bufferToTextureShader });
-    const b2tBindGroupLayout = device.createBindGroupLayout({
+    this.bufferToTexBindGroupLayout = device.createBindGroupLayout({
       entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
@@ -88,11 +89,11 @@ export class WebGPURenderer {
       ],
     });
     this.bufferToTexPipeline = device.createComputePipeline({
-      layout: device.createPipelineLayout({ bindGroupLayouts: [b2tBindGroupLayout] }),
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.bufferToTexBindGroupLayout] }),
       compute: { module: b2tModule, entryPoint: 'main' },
     });
     this.bufferToTexBindGroup = device.createBindGroup({
-      layout: b2tBindGroupLayout,
+      layout: this.bufferToTexBindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: paramsBuffer } },
         { binding: 1, resource: { buffer: densityFieldBuffer } },
@@ -333,6 +334,21 @@ export class WebGPURenderer {
     pass.draw(3);
 
     pass.end();
+  }
+
+  setThreshold(value: number) {
+    this.renderUniformData[19] = value;
+  }
+
+  rebindComputeBuffers(densityFieldBuffer: GPUBuffer, paramsBuffer: GPUBuffer) {
+    this.bufferToTexBindGroup = this.device.createBindGroup({
+      layout: this.bufferToTexBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: paramsBuffer } },
+        { binding: 1, resource: { buffer: densityFieldBuffer } },
+        { binding: 2, resource: this.densityTextureView },
+      ],
+    });
   }
 
   dispose() {

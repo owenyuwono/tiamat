@@ -1,6 +1,19 @@
 const MAX_TIMESTAMPS = 40;
 const SAMPLE_INTERVAL = 60;
 
+export interface GPUTimingEntry {
+  label: string;
+  totalMs: number;
+  count: number;
+}
+
+export interface GPUTimingSnapshot {
+  passes: GPUTimingEntry[];
+  totalMs: number;
+  particleCount: number;
+  substeps: number;
+}
+
 export class GPUProfiler {
   private querySet: GPUQuerySet;
   private resolveBuffer: GPUBuffer;
@@ -10,9 +23,9 @@ export class GPUProfiler {
   private savedLabels: string[] = [];
   private frameCount = 0;
   private needsReadback = false;
-  private overlay: HTMLDivElement;
   private substeps = 0;
   private particleCount = 0;
+  private lastSnapshot: GPUTimingSnapshot | null = null;
 
   constructor(device: GPUDevice) {
     this.querySet = device.createQuerySet({
@@ -29,13 +42,6 @@ export class GPUProfiler {
       size,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
     });
-
-    this.overlay = document.createElement('div');
-    this.overlay.style.cssText =
-      'position:fixed;top:48px;left:0;padding:6px 8px;' +
-      'background:rgba(0,0,0,0.75);color:#0f0;font:11px/1.4 monospace;' +
-      'pointer-events:none;z-index:10000;white-space:pre;';
-    document.body.appendChild(this.overlay);
   }
 
   beginFrame() {
@@ -84,8 +90,8 @@ export class GPUProfiler {
       await this.stagingBuffer.mapAsync(GPUMapMode.READ);
       const data = new BigInt64Array(this.stagingBuffer.getMappedRange());
 
-      const ordered: { label: string; totalMs: number; count: number }[] = [];
-      const map = new Map<string, { label: string; totalMs: number; count: number }>();
+      const ordered: GPUTimingEntry[] = [];
+      const map = new Map<string, GPUTimingEntry>();
 
       for (let i = 0; i < this.savedLabels.length; i++) {
         const label = this.savedLabels[i];
@@ -106,24 +112,27 @@ export class GPUProfiler {
 
       this.stagingBuffer.unmap();
 
-      let text = `particles: ${this.particleCount.toLocaleString()}\nsubsteps: ${this.substeps}\n`;
       let total = 0;
-      for (const { label, totalMs, count } of ordered) {
-        const tag = count > 1 ? ` ×${count}` : '';
-        text += `${label}${tag}`.padEnd(22) + totalMs.toFixed(3) + 'ms\n';
-        total += totalMs;
-      }
-      text += 'GPU total'.padEnd(22) + total.toFixed(3) + 'ms';
-      this.overlay.textContent = text;
+      for (const { totalMs } of ordered) total += totalMs;
+
+      this.lastSnapshot = {
+        passes: ordered,
+        totalMs: total,
+        particleCount: this.particleCount,
+        substeps: this.substeps,
+      };
     } catch {
       // buffer destroyed or device lost
     }
+  }
+
+  getSnapshot(): GPUTimingSnapshot | null {
+    return this.lastSnapshot;
   }
 
   dispose() {
     this.querySet.destroy();
     this.resolveBuffer.destroy();
     this.stagingBuffer.destroy();
-    this.overlay.remove();
   }
 }

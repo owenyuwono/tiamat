@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { SPH } from '../sph/constants';
+import type { SimConfig } from '../ui/SimConfig';
 import type { GPUProfiler } from './GPUProfiler';
 import clearGridShader from './shaders/clearGrid.wgsl?raw';
 import insertParticlesShader from './shaders/insertParticles.wgsl?raw';
@@ -56,6 +57,7 @@ export class GPUCompute {
   private paramsArrayBuffer: ArrayBuffer;
   private paramsF32: Float32Array;
   private paramsU32: Uint32Array;
+  private zeroVelocities: Float32Array;
 
   static async create(
     particleCount: number,
@@ -146,6 +148,7 @@ export class GPUCompute {
     this.paramsArrayBuffer = new ArrayBuffer(128);
     this.paramsF32 = new Float32Array(this.paramsArrayBuffer);
     this.paramsU32 = new Uint32Array(this.paramsArrayBuffer);
+    this.zeroVelocities = new Float32Array(particleCount * 4);
 
     const H = SPH.smoothingRadius;
     const H2 = H * H;
@@ -428,7 +431,21 @@ export class GPUCompute {
     this.currentStaging = 1 - this.currentStaging;
   }
 
-  dispose() {
+  updateSimConfig(config: SimConfig) {
+    this.paramsF32[8] = config.stiffness;
+    this.paramsF32[9] = config.viscosity;
+    this.paramsF32[10] = config.gravity;
+    this.paramsF32[11] = config.boundaryDamping;
+    this.paramsF32[12] = config.maxVelocity;
+    this.paramsF32[15] = config.xsphEpsilon;
+    this.paramsF32[16] = config.surfaceTension;
+  }
+
+  resetVelocities() {
+    this.device.queue.writeBuffer(this.velocitiesBuffer, 0, this.zeroVelocities);
+  }
+
+  dispose(destroyDevice = false) {
     this.positionsBuffer.destroy();
     this.velocitiesBuffer.destroy();
     this.forcesBuffer.destroy();
@@ -440,6 +457,6 @@ export class GPUCompute {
     this.paramsBuffer.destroy();
     this.stagingBuffers[0].destroy();
     this.stagingBuffers[1].destroy();
-    this.device.destroy();
+    if (destroyDevice) this.device.destroy();
   }
 }

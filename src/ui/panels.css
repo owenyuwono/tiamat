@@ -1,0 +1,229 @@
+.panel {
+  position: fixed;
+  z-index: 10001;
+  background: oklch(12% 0.005 260 / 0.85);
+  border: 1px solid oklch(100% 0 0 / 0.08);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: oklch(90% 0.01 260);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.5;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  user-select: none;
+}
+
+/* Control panel — left side */
+.panel-controls {
+  top: 12px;
+  left: 12px;
+  width: 240px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: oklch(40% 0 0 / 0.3) transparent;
+}
+
+/* Stats panel — top right */
+.panel-stats {
+  top: 12px;
+  right: 12px;
+  width: 200px;
+}
+
+/* Section headers */
+.panel-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: oklch(65% 0.01 260);
+}
+
+.panel-section-header:hover {
+  color: oklch(80% 0.01 260);
+}
+
+.panel-section-chevron {
+  font-size: 9px;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.panel-section.collapsed .panel-section-chevron {
+  transform: rotate(-90deg);
+}
+
+.panel-section-body {
+  overflow: hidden;
+  max-height: 500px;
+  transition: max-height 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.panel-section.collapsed .panel-section-body {
+  max-height: 0;
+}
+
+.panel-separator {
+  border: none;
+  border-top: 1px solid oklch(100% 0 0 / 0.06);
+  margin: 6px 0;
+}
+
+/* Slider rows */
+.slider-row {
+  margin-bottom: 8px;
+}
+
+.slider-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 3px;
+}
+
+.slider-label-text {
+  font-size: 11px;
+  color: oklch(75% 0.01 260);
+}
+
+.slider-value {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+  font-size: 10px;
+  color: oklch(72% 0.12 230);
+  min-width: 48px;
+  text-align: right;
+}
+
+/* Range input */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 14px;
+  background: transparent;
+  cursor: pointer;
+  margin: 0;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px;
+  background: oklch(100% 0 0 / 0.12);
+  border-radius: 1px;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: oklch(72% 0.12 230);
+  margin-top: -5px;
+  border: none;
+  transition: background 0.15s;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  background: oklch(80% 0.14 230);
+}
+
+input[type="range"]::-moz-range-track {
+  height: 2px;
+  background: oklch(100% 0 0 / 0.12);
+  border-radius: 1px;
+  border: none;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: oklch(72% 0.12 230);
+  border: none;
+}
+
+input[type="range"]::-moz-range-thumb:hover {
+  background: oklch(80% 0.14 230);
+}
+
+/* Buttons */
+.panel-btn-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.panel-btn {
+  flex: 1;
+  padding: 5px 0;
+  border: 1px solid oklch(100% 0 0 / 0.1);
+  border-radius: 5px;
+  background: oklch(100% 0 0 / 0.04);
+  color: oklch(80% 0.01 260);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.panel-btn:hover {
+  background: oklch(100% 0 0 / 0.08);
+  border-color: oklch(100% 0 0 / 0.16);
+}
+
+.panel-btn:active {
+  background: oklch(100% 0 0 / 0.12);
+}
+
+/* Stats panel rows */
+.stats-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 1px 0;
+}
+
+.stats-label {
+  font-size: 11px;
+  color: oklch(65% 0.01 260);
+}
+
+.stats-value {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+  font-size: 11px;
+  color: oklch(90% 0.01 260);
+}
+
+.stats-sub-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 0 0 0 8px;
+}
+
+.stats-sub-label {
+  font-size: 10px;
+  color: oklch(55% 0.01 260);
+}
+
+.stats-sub-value {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+  font-size: 10px;
+  color: oklch(72% 0.12 230);
+}
+
+.stats-gpu-header {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: oklch(65% 0.01 260);
+  padding: 4px 0 2px;
+}
