@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { SPH } from '../sph/constants';
+import type { GPUProfiler } from './GPUProfiler';
 import clearGridShader from './shaders/clearGrid.wgsl?raw';
 import insertParticlesShader from './shaders/insertParticles.wgsl?raw';
 import computeDensityShader from './shaders/computeDensity.wgsl?raw';
@@ -67,7 +68,14 @@ export class GPUCompute {
     if (!navigator.gpu) return null;
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) return null;
-    const device = await adapter.requestDevice();
+    const features: GPUFeatureName[] = [];
+    if (adapter.features.has('float32-filterable')) {
+      features.push('float32-filterable');
+    }
+    if (adapter.features.has('timestamp-query')) {
+      features.push('timestamp-query');
+    }
+    const device = await adapter.requestDevice({ requiredFeatures: features });
     return new GPUCompute(device, particleCount, containerSize, fieldResolution, domainMin, domainMax, splatRadius);
   }
 
@@ -341,34 +349,49 @@ export class GPUCompute {
     this.device.queue.writeBuffer(this.positionsBuffer, 0, packed);
   }
 
-  async step(dt: number, substeps: number) {
-    void dt;
-    const fixedDt = 0.005;
+  getDevice(): GPUDevice { return this.device; }
+  getDensityFieldBuffer(): GPUBuffer { return this.densityFieldBuffer; }
+  getParamsBuffer(): GPUBuffer { return this.paramsBuffer; }
+  getFieldResolution(): number { return this.fieldResolution; }
+
+  encodeStep(encoder: GPUCommandEncoder, substeps: number, profiler?: GPUProfiler | null) {
+    const fixedDt = 0.008;
     this.paramsF32[17] = fixedDt;
     this.device.queue.writeBuffer(this.paramsBuffer, 0, this.paramsArrayBuffer);
 
-    const encoder = this.device.createCommandEncoder();
-
-    this.dispatch(encoder, this.clearGridPipeline, this.clearGridBindGroup, Math.ceil(this.tableSize / 256));
-    this.dispatch(encoder, this.insertParticlesPipeline, this.insertParticlesBindGroup, Math.ceil(this.particleCount / 64));
+    this.dispatch(encoder, this.clearGridPipeline, this.clearGridBindGroup,
+      Math.ceil(this.tableSize / 256), profiler?.timestampWrites('clearGrid'));
+    this.dispatch(encoder, this.insertParticlesPipeline, this.insertParticlesBindGroup,
+      Math.ceil(this.particleCount / 64), profiler?.timestampWrites('insertParticles'));
 
     for (let s = 0; s < substeps; s++) {
-      this.dispatch(encoder, this.computeDensityPipeline, this.computeDensityBindGroup, Math.ceil(this.particleCount / 64));
-      this.dispatch(encoder, this.computeForcesPipeline, this.computeForcesBindGroup, Math.ceil(this.particleCount / 64));
-      this.dispatch(encoder, this.integratePipeline, this.integrateBindGroup, Math.ceil(this.particleCount / 64));
+      this.dispatch(encoder, this.computeDensityPipeline, this.computeDensityBindGroup,
+        Math.ceil(this.particleCount / 64), profiler?.timestampWrites('computeDensity'));
+      this.dispatch(encoder, this.computeForcesPipeline, this.computeForcesBindGroup,
+        Math.ceil(this.particleCount / 64), profiler?.timestampWrites('computeForces'));
+      this.dispatch(encoder, this.integratePipeline, this.integrateBindGroup,
+        Math.ceil(this.particleCount / 64), profiler?.timestampWrites('integrate'));
 
       if (s < substeps - 1) {
-        this.dispatch(encoder, this.clearGridPipeline, this.clearGridBindGroup, Math.ceil(this.tableSize / 256));
-        this.dispatch(encoder, this.insertParticlesPipeline, this.insertParticlesBindGroup, Math.ceil(this.particleCount / 64));
+        this.dispatch(encoder, this.clearGridPipeline, this.clearGridBindGroup,
+          Math.ceil(this.tableSize / 256), profiler?.timestampWrites('clearGrid'));
+        this.dispatch(encoder, this.insertParticlesPipeline, this.insertParticlesBindGroup,
+          Math.ceil(this.particleCount / 64), profiler?.timestampWrites('insertParticles'));
       }
     }
 
     const fieldElements = this.fieldResolution * this.fieldResolution * this.fieldResolution * 2;
-    this.dispatch(encoder, this.clearDensityFieldPipeline, this.clearDensityFieldBindGroup, Math.ceil(fieldElements / 256));
-    this.dispatch(encoder, this.splatDensityPipeline, this.splatDensityBindGroup, Math.ceil(this.particleCount / 64));
+    this.dispatch(encoder, this.clearDensityFieldPipeline, this.clearDensityFieldBindGroup,
+      Math.ceil(fieldElements / 256), profiler?.timestampWrites('clearDensityField'));
+    this.dispatch(encoder, this.splatDensityPipeline, this.splatDensityBindGroup,
+      Math.ceil(this.particleCount / 64), profiler?.timestampWrites('splatDensity'));
+  }
 
+  async step(dt: number, substeps: number) {
+    void dt;
+    const encoder = this.device.createCommandEncoder();
+    this.encodeStep(encoder, substeps);
     encoder.copyBufferToBuffer(this.densityFieldBuffer, 0, this.stagingBuffers[this.currentStaging], 0, this.fieldSize);
-
     this.device.queue.submit([encoder.finish()]);
   }
 
@@ -377,8 +400,11 @@ export class GPUCompute {
     pipeline: GPUComputePipeline,
     bindGroup: GPUBindGroup,
     workgroupCount: number,
+    timestampWrites?: GPUComputePassTimestampWrites,
   ) {
-    const pass = encoder.beginComputePass();
+    const pass = encoder.beginComputePass(
+      timestampWrites ? { timestampWrites } : undefined,
+    );
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, bindGroup);
     pass.dispatchWorkgroups(workgroupCount);

@@ -85,8 +85,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             continue;
           }
 
-          let r = sqrt(r2);
-          let dir = diff / r;
+          let invR = inverseSqrt(r2);
+          let r = r2 * invR;
+          let dir = diff * invR;
           let hr = params.H - r;
           let densityJ = densityPressure[j].x;
           let pressureJ = densityPressure[j].y;

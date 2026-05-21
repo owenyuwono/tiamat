@@ -21,3 +21,11 @@ declare const GPUMapMode: {
   readonly READ: 0x1;
   readonly WRITE: 0x2;
 };
+
+declare const GPUTextureUsage: {
+  readonly COPY_SRC: 0x01;
+  readonly COPY_DST: 0x02;
+  readonly TEXTURE_BINDING: 0x04;
+  readonly STORAGE_BINDING: 0x08;
+  readonly RENDER_ATTACHMENT: 0x10;
+};

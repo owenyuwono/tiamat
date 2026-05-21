@@ -60,7 +60,7 @@ void main() {
   bool hit = false;
   vec3 hitPos;
 
-  for (int i = 0; i < 400; i++) {
+  for (int i = 0; i < 280; i++) {
     if (t > tFar) break;
     vec3 p = ro + rd * t;
     float d = sampleDensity(p);
@@ -107,7 +107,7 @@ void main() {
   // Depth estimation via secondary march
   float depth = 0.0;
   float tD = t;
-  for (int i = 0; i < 32; i++) {
+  for (int i = 0; i < 16; i++) {
     tD += stepSize * 2.0;
     if (tD > tFar) { depth = tD - t; break; }
     if (sampleDensity(ro + rd * tD) < uThreshold) {
@@ -115,6 +115,7 @@ void main() {
       break;
     }
   }
+  if (depth == 0.0) { depth = tD - t; }
   float depthFactor = 1.0 - exp(-depth * 3.0);
 
   vec3 deepColor = vec3(0.02, 0.12, 0.42);

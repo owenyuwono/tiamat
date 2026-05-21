@@ -4,39 +4,62 @@ Real-time SPH (Smoothed Particle Hydrodynamics) fluid simulation with raymarched
 
 ## Stack
 
-- Three.js (v0.184) + WebGL2 for rendering
-- WebGPU compute shaders for simulation (CPU fallback in `src/sph/`)
+- Three.js (v0.184) for camera/controls math only (WebGPU path) or full rendering (CPU fallback)
+- WebGPU compute shaders for simulation + WebGPU render pipeline for raymarching
+- CPU fallback: Three.js WebGL2 rendering + CPU SPH (`src/sph/`)
 - TypeScript, Vite
 - GLSL shaders imported via `?raw`, WGSL shaders via `?raw`
 
 ## Architecture
 
-### GPU Simulation (`src/gpu/`)
-- **WebGPU compute SPH** — 70k particles at 60fps
-- `GPUCompute.ts` — device init, buffer allocation, 7 compute pipelines, double-buffered density field readback
-- Compute pass order per frame: clearGrid → insertParticles → [substep: computeDensity → computeForces → integrate] → clearDensityField → splatDensity → copy to staging
+### GPU Pipeline (`src/gpu/`) — zero CPU readback
+
+Single WebGPU device handles both compute and render. One command encoder per frame.
+
+**`GPUCompute.ts`** — device init (requests `float32-filterable` feature), buffer allocation, 7 compute pipelines
+- `encodeStep(encoder, substeps)` — encodes all compute passes onto an external encoder (no submit, no staging copy)
+- `step()` + `readDensityField()` — legacy path with staging buffer readback, kept for backward compat
+- Compute pass order: clearGrid → insertParticles → [substep: computeDensity → computeForces → integrate] → clearDensityField → splatDensity
 - Spatial hash grid with fixed-size cells (`MAX_PER_CELL=32`), `atomicAdd` for lock-free insertion
 - Density field splatting uses fixed-point `u32` atomics (scale 10000) since WebGPU lacks atomic floats
-- Table size is dynamic: `nextPowerOfTwo(particleCount * 3)`
 - Params struct (128 bytes, 32 fields) shared across all shaders — WGSL struct layout must match TypeScript array indices exactly
+
+**`WebGPURenderer.ts`** — render pipeline orchestrator
+- Creates `rg32float` 3D texture (80^3, STORAGE_BINDING | TEXTURE_BINDING) shared between compute and render
+- `bufferToTexture.wgsl` compute pass converts u32 density buffer → 3D texture (workgroup 4,4,4)
+- `waterRaymarch.wgsl` renders fullscreen triangle with WGSL raymarching (ported from GLSL)
+- `wireframe.wgsl` renders container box as line-list (24 verts, 12 edges)
+- Linear sampler with clamp-to-edge for hardware trilinear filtering
+- Uniforms: render params (192 bytes, 16-byte aligned) + wireframe params (80 bytes)
+- Caches Matrix4/Vector3 to avoid per-frame allocations
+
+**Frame pipeline:**
+```
+1. clearGrid → insertParticles → [substeps × (density → forces → integrate)]
+2. clearDensityField → splatDensity (atomic u32 buffer)
+3. bufferToTexture compute (u32 → rg32float 3D texture)
+4. render pass: clear bg → draw wireframe → draw water (fullscreen tri, alpha blend)
+```
 
 ### CPU Simulation fallback (`src/sph/`)
 - `simulation.ts` — SoA particle data (Float32Array), prefix-sum spatial hash, same physics as GPU
 - `constants.ts` — all physics tuning parameters (shared by both GPU and CPU paths)
 - Used when WebGPU is unavailable (`GPUCompute.create()` returns null)
+- Falls back to Three.js WebGLRenderer with `WaterRenderer.ts` (Data3DTexture + GLSL raymarching)
 
-### Rendering (`src/rendering/`)
-- **3D density texture** (80^3, RG format): R = density, G = XSPH-weighted density (collision impact indicator)
-- `DensityField.ts` — CPU splatting (used by CPU fallback path only)
-- `WaterRenderer.ts` — Data3DTexture (RGFormat, FloatType, LinearFilter), ShaderMaterial with BackSide rendering, `transparent: true`, `depthWrite: false`
-- **Raymarching shader** (`shaders/water.frag.glsl`): fixed-step march (step 0.025, 400 iterations for 4x4x4 container) with binary refinement, Fresnel + Blinn-Phong shading, depth-based alpha transparency, XSPH-based collision foam restricted to upward-facing surfaces
+### Rendering fallback (`src/rendering/`)
+- `WaterRenderer.ts` — Three.js ShaderMaterial with BackSide box rendering, `transparent: true`, `depthWrite: false`
+- `DensityField.ts` — CPU splatting into Float32Array backing a Data3DTexture
+- `water.frag.glsl` — GLSL raymarching shader (reference implementation, WGSL port in `waterRaymarch.wgsl`)
 
 ## Key design decisions
 
-- `BackSide` box rendering for raymarching — handles camera inside/outside volume
-- Ray direction computed from `gl_FragCoord` + inverse view-projection matrix (not interpolated vertex position) to eliminate triangle-seam artifacts
-- GPU path: density field read back via double-buffered staging buffers (MAP_READ), 1-frame latency
-- DensityField (CPU path) shares its Float32Array backing with the 3D texture to avoid per-frame copy
+- **Zero CPU readback (GPU path)**: density field stays on GPU as a 3D texture shared between compute (atomic u32 buffer → bufferToTexture copy) and render (hardware-filtered sampling). Eliminates the old 4MB staging buffer round-trip.
+- **`float32-filterable` device feature**: required for `rg32float` textures with linear sampling. Requested conditionally in `GPUCompute.create()` — without it, bind group creation fails silently and the entire command encoder becomes a no-op.
+- **WGSL Y-axis flip**: `@builtin(position).y` is 0 at top (opposite of GLSL `gl_FragCoord.y`). NDC Y must be negated in `waterRaymarch.wgsl`.
+- **GPU throttling**: `await device.queue.onSubmittedWorkDone()` prevents GPU queue buildup. Without it, `queue.submit()` is non-blocking — JS queues frames faster than GPU processes them, causing increasing input lag and thermal throttling on laptops.
+- Fullscreen triangle for raymarching — simpler than BackSide box, AABB test discards non-intersecting pixels
+- Ray direction computed from `@builtin(position)` + inverse view-projection matrix
 - Mirror particles at 6 walls restore density at boundaries (prevents gaps)
 - Negative pressure clamped to 0 (Tait equation) — prevents tensile instability at free surface
 - Density guard in integrate.wgsl: `max(density, 10.0)` prevents division-by-zero freezing particles
@@ -49,7 +72,7 @@ Real-time SPH (Smoothed Particle Hydrodynamics) fluid simulation with raymarched
 
 - `constants.ts` — stiffness (150), viscosity (2.5), XSPH epsilon, surface tension, Tait gamma
 - `main.ts` — particle count (70k), container size (4x4x4), splat radius (0.1), density threshold (0.75), fixed dt (0.005), max substeps (3)
-- `water.frag.glsl` — foam XSPH thresholds (0.2–1.5), step size (0.025), depth absorption rate (3.0), shallow/deep colors, blue absorption filter, Fresnel reflection strength (0.4)
+- `waterRaymarch.wgsl` / `water.frag.glsl` — foam XSPH thresholds (0.2–1.5), step size (0.025), depth absorption rate (3.0), shallow/deep colors, blue absorption filter, Fresnel reflection strength (0.4)
 
 ## Known issues
 
@@ -61,3 +84,4 @@ Real-time SPH (Smoothed Particle Hydrodynamics) fluid simulation with raymarched
 - At 70k: block is 2.05m in 4m container (51%). Larger counts need bigger containers or the physics becomes unstable (pressure waves with nowhere to dissipate)
 - Raymarching iterations must cover the container diagonal: `iterations * stepSize > sqrt(3) * containerSize`
 - Stiffness of 50 (original) causes supersonic compression at high particle counts — increased to 150 for stability
+- Raymarching is the main GPU bottleneck on laptops — fullscreen shader runs 400 steps × multiple texture samples per hit pixel. Reducing pixel ratio or step count are the main perf levers.
