@@ -9,6 +9,7 @@ export interface SimConfig {
   maxVelocity: number;
   xsphEpsilon: number;
   surfaceTension: number;
+  splatRadius: number;
   threshold: number;
   renderScale: number;
   paused: boolean;
@@ -27,6 +28,7 @@ export function createDefaultConfig(): SimConfig {
     maxVelocity: SPH.maxVelocity,
     xsphEpsilon: SPH.xsphEpsilon,
     surfaceTension: SPH.surfaceTension,
+    splatRadius: 0.1,
     threshold: 0.75,
     renderScale: 0.5,
     paused: false,

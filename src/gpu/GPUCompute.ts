@@ -439,6 +439,9 @@ export class GPUCompute {
     this.paramsF32[12] = config.maxVelocity;
     this.paramsF32[15] = config.xsphEpsilon;
     this.paramsF32[16] = config.surfaceTension;
+    this.paramsF32[30] = config.splatRadius * config.splatRadius;
+    const fieldCellSize = this.paramsF32[28];
+    this.paramsU32[31] = Math.ceil(config.splatRadius / fieldCellSize);
   }
 
   resetVelocities() {

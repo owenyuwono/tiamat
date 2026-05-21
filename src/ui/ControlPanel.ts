@@ -27,6 +27,7 @@ const PHYSICS_SLIDERS: SliderDef[] = [
 ];
 
 const RENDER_SLIDERS: SliderDef[] = [
+  { key: 'splatRadius', label: 'Particle Size', min: 0.04, max: 0.3, step: 0.01 },
   { key: 'threshold', label: 'Density Threshold', min: 0.1, max: 3.0, step: 0.05 },
   { key: 'renderScale', label: 'Render Scale', min: 0.25, max: 1.0, step: 0.05, format: v => (v * 100).toFixed(0) + '%' },
 ];
