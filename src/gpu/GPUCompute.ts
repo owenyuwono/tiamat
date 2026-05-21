@@ -33,6 +33,7 @@ export class GPUCompute {
   private cellCountsBuffer: GPUBuffer;
   private cellEntriesBuffer: GPUBuffer;
   private densityFieldBuffer: GPUBuffer;
+  private sleepBuffer: GPUBuffer;
   private paramsBuffer: GPUBuffer;
   private stagingBuffers: [GPUBuffer, GPUBuffer];
   private currentStaging: number = 0;
@@ -127,6 +128,10 @@ export class GPUCompute {
     this.densityFieldBuffer = device.createBuffer({
       size: this.fieldSize,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+    });
+    this.sleepBuffer = device.createBuffer({
+      size: N * 4,
+      usage: GPUBufferUsage.STORAGE,
     });
     this.paramsBuffer = device.createBuffer({
       size: 128,
@@ -250,6 +255,7 @@ export class GPUCompute {
       { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
       { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
     ]);
     this.computeForcesPipeline = computeForcesResult.pipeline;
     this.computeForcesBindGroup = device.createBindGroup({
@@ -263,6 +269,7 @@ export class GPUCompute {
         { binding: 5, resource: { buffer: this.xsphBuffer } },
         { binding: 6, resource: { buffer: this.cellCountsBuffer } },
         { binding: 7, resource: { buffer: this.cellEntriesBuffer } },
+        { binding: 8, resource: { buffer: this.sleepBuffer } },
       ],
     });
 
@@ -273,6 +280,7 @@ export class GPUCompute {
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
     ]);
     this.integratePipeline = integrateResult.pipeline;
     this.integrateBindGroup = device.createBindGroup({
@@ -284,6 +292,7 @@ export class GPUCompute {
         { binding: 3, resource: { buffer: this.forcesBuffer } },
         { binding: 4, resource: { buffer: this.densityPressureBuffer } },
         { binding: 5, resource: { buffer: this.xsphBuffer } },
+        { binding: 6, resource: { buffer: this.sleepBuffer } },
       ],
     });
 
@@ -362,21 +371,21 @@ export class GPUCompute {
     this.dispatch(encoder, this.clearGridPipeline, this.clearGridBindGroup,
       Math.ceil(this.tableSize / 256), profiler?.timestampWrites('clearGrid'));
     this.dispatch(encoder, this.insertParticlesPipeline, this.insertParticlesBindGroup,
-      Math.ceil(this.particleCount / 64), profiler?.timestampWrites('insertParticles'));
+      Math.ceil(this.particleCount / 256), profiler?.timestampWrites('insertParticles'));
 
     for (let s = 0; s < substeps; s++) {
       this.dispatch(encoder, this.computeDensityPipeline, this.computeDensityBindGroup,
-        Math.ceil(this.particleCount / 64), profiler?.timestampWrites('computeDensity'));
+        Math.ceil(this.particleCount / 256), profiler?.timestampWrites('computeDensity'));
       this.dispatch(encoder, this.computeForcesPipeline, this.computeForcesBindGroup,
-        Math.ceil(this.particleCount / 64), profiler?.timestampWrites('computeForces'));
+        Math.ceil(this.particleCount / 256), profiler?.timestampWrites('computeForces'));
       this.dispatch(encoder, this.integratePipeline, this.integrateBindGroup,
-        Math.ceil(this.particleCount / 64), profiler?.timestampWrites('integrate'));
+        Math.ceil(this.particleCount / 256), profiler?.timestampWrites('integrate'));
 
       if (s < substeps - 1) {
         this.dispatch(encoder, this.clearGridPipeline, this.clearGridBindGroup,
           Math.ceil(this.tableSize / 256), profiler?.timestampWrites('clearGrid'));
         this.dispatch(encoder, this.insertParticlesPipeline, this.insertParticlesBindGroup,
-          Math.ceil(this.particleCount / 64), profiler?.timestampWrites('insertParticles'));
+          Math.ceil(this.particleCount / 256), profiler?.timestampWrites('insertParticles'));
       }
     }
 
@@ -384,7 +393,7 @@ export class GPUCompute {
     this.dispatch(encoder, this.clearDensityFieldPipeline, this.clearDensityFieldBindGroup,
       Math.ceil(fieldElements / 256), profiler?.timestampWrites('clearDensityField'));
     this.dispatch(encoder, this.splatDensityPipeline, this.splatDensityBindGroup,
-      Math.ceil(this.particleCount / 64), profiler?.timestampWrites('splatDensity'));
+      Math.ceil(this.particleCount / 256), profiler?.timestampWrites('splatDensity'));
   }
 
   async step(dt: number, substeps: number) {
@@ -437,6 +446,7 @@ export class GPUCompute {
     this.cellCountsBuffer.destroy();
     this.cellEntriesBuffer.destroy();
     this.densityFieldBuffer.destroy();
+    this.sleepBuffer.destroy();
     this.paramsBuffer.destroy();
     this.stagingBuffers[0].destroy();
     this.stagingBuffers[1].destroy();

@@ -53,7 +53,7 @@ fn mirrorDensityContrib(dist: f32, mass: f32, poly6Coeff: f32, H2: f32) -> f32 {
   return mass * poly6Coeff * d * d * d;
 }
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
   if (i >= params.particleCount) {

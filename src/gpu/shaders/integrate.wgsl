@@ -39,8 +39,14 @@ struct Params {
 @group(0) @binding(3) var<storage, read> forces: array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read> densityPressure: array<vec2<f32>>;
 @group(0) @binding(5) var<storage, read> xsph: array<vec4<f32>>;
+@group(0) @binding(6) var<storage, read_write> sleepState: array<u32>;
 
-@compute @workgroup_size(64)
+const SLEEP_THRESHOLD: u32 = 120u;
+const SLEEP_VEL_THRESHOLD: f32 = 0.02;
+const SLEEP_DENSITY_THRESHOLD: f32 = 0.05;
+const WAKE_DENSITY_THRESHOLD: f32 = 0.08;
+
+@compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
   if (i >= params.particleCount) {
@@ -48,6 +54,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 
   let density = max(densityPressure[i].x, 10.0);
+
+  let sleeping = sleepState[i] >= SLEEP_THRESHOLD;
+  if (sleeping) {
+    let deviation = abs(density - params.restDensity) / params.restDensity;
+    if (deviation > WAKE_DENSITY_THRESHOLD) {
+      sleepState[i] = 0u;
+    } else {
+      velocities[i] = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+      return;
+    }
+  }
+
   let invRho = 1.0 / density;
 
   var vel = velocities[i].xyz;
@@ -90,4 +108,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   positions[i] = vec4<f32>(pos, positions[i].w);
   velocities[i] = vec4<f32>(vel, velocities[i].w);
+
+  let speed = sqrt(dot(vel, vel));
+  let densityDev = abs(density - params.restDensity) / params.restDensity;
+  if (speed < SLEEP_VEL_THRESHOLD && densityDev < SLEEP_DENSITY_THRESHOLD) {
+    sleepState[i] = sleepState[i] + 1u;
+  } else {
+    sleepState[i] = 0u;
+  }
 }

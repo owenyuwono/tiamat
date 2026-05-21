@@ -43,7 +43,7 @@ fn hashCell(cx: i32, cy: i32, cz: i32, tableSize: u32) -> u32 {
   return u32(h & 0x7FFFFFFF) % tableSize;
 }
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
   if (i >= params.particleCount) {

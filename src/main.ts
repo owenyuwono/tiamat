@@ -9,7 +9,7 @@ import { GPUProfiler } from './gpu/GPUProfiler';
 import { WebGPURenderer } from './gpu/WebGPURenderer';
 
 const CONTAINER_SIZE = new THREE.Vector3(4, 4, 4);
-const PARTICLE_COUNT = 70000;
+const PARTICLE_COUNT = 100000;
 
 const stats = new Stats();
 stats.showPanel(0);
