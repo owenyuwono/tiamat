@@ -33,7 +33,6 @@ export class GPUCompute {
   private cellCountsBuffer: GPUBuffer;
   private cellEntriesBuffer: GPUBuffer;
   private densityFieldBuffer: GPUBuffer;
-  private sleepBuffer: GPUBuffer;
   private paramsBuffer: GPUBuffer;
   private stagingBuffers: [GPUBuffer, GPUBuffer];
   private currentStaging: number = 0;
@@ -128,10 +127,6 @@ export class GPUCompute {
     this.densityFieldBuffer = device.createBuffer({
       size: this.fieldSize,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
-    });
-    this.sleepBuffer = device.createBuffer({
-      size: N * 4,
-      usage: GPUBufferUsage.STORAGE,
     });
     this.paramsBuffer = device.createBuffer({
       size: 128,
@@ -255,7 +250,6 @@ export class GPUCompute {
       { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
       { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-      { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
     ]);
     this.computeForcesPipeline = computeForcesResult.pipeline;
     this.computeForcesBindGroup = device.createBindGroup({
@@ -269,7 +263,6 @@ export class GPUCompute {
         { binding: 5, resource: { buffer: this.xsphBuffer } },
         { binding: 6, resource: { buffer: this.cellCountsBuffer } },
         { binding: 7, resource: { buffer: this.cellEntriesBuffer } },
-        { binding: 8, resource: { buffer: this.sleepBuffer } },
       ],
     });
 
@@ -280,7 +273,6 @@ export class GPUCompute {
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-      { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
     ]);
     this.integratePipeline = integrateResult.pipeline;
     this.integrateBindGroup = device.createBindGroup({
@@ -292,7 +284,6 @@ export class GPUCompute {
         { binding: 3, resource: { buffer: this.forcesBuffer } },
         { binding: 4, resource: { buffer: this.densityPressureBuffer } },
         { binding: 5, resource: { buffer: this.xsphBuffer } },
-        { binding: 6, resource: { buffer: this.sleepBuffer } },
       ],
     });
 
@@ -446,7 +437,6 @@ export class GPUCompute {
     this.cellCountsBuffer.destroy();
     this.cellEntriesBuffer.destroy();
     this.densityFieldBuffer.destroy();
-    this.sleepBuffer.destroy();
     this.paramsBuffer.destroy();
     this.stagingBuffers[0].destroy();
     this.stagingBuffers[1].destroy();

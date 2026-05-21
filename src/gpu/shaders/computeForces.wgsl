@@ -41,9 +41,6 @@ struct Params {
 @group(0) @binding(5) var<storage, read_write> xsph: array<vec4<f32>>;
 @group(0) @binding(6) var<storage, read> cellCounts: array<u32>;
 @group(0) @binding(7) var<storage, read> cellEntries: array<u32>;
-@group(0) @binding(8) var<storage, read> sleepState: array<u32>;
-
-const SLEEP_THRESHOLD: u32 = 120u;
 
 fn hashCell(cx: i32, cy: i32, cz: i32, tableSize: u32) -> u32 {
   let h = (cx * 73856093) ^ (cy * 19349663) ^ (cz * 83492791);
@@ -54,12 +51,6 @@ fn hashCell(cx: i32, cy: i32, cz: i32, tableSize: u32) -> u32 {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
   if (i >= params.particleCount) {
-    return;
-  }
-
-  if (sleepState[i] >= SLEEP_THRESHOLD) {
-    forces[i] = vec4<f32>(0.0);
-    xsph[i] = vec4<f32>(0.0);
     return;
   }
 
