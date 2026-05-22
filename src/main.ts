@@ -14,6 +14,7 @@ import type { Algorithm } from './ui/SimConfig';
 import { AlgorithmPicker } from './ui/AlgorithmPicker';
 import { ControlPanel } from './ui/ControlPanel';
 import { StatsPanel } from './ui/StatsPanel';
+import { RigidBodySystem } from './gpu/RigidBodySystem';
 
 const CONTAINER_SIZE = new THREE.Vector3(4, 4, 4);
 const FIELD_RESOLUTION = 100;
@@ -94,6 +95,7 @@ async function init() {
 
     gpuCompute.uploadInitialPositions(savedPosX, savedPosY, savedPosZ);
     webgpuRenderer.initSprayRenderer(gpuCompute.getSprayBuffer());
+    webgpuRenderer.setObstaclesBuffer(gpuCompute.getObstaclesUniformBuffer());
     webgpuRenderer.loadFloorTexture('/sand_diff.jpg');
     console.log('WebGPU render + compute enabled');
   } else {
@@ -119,6 +121,29 @@ async function init() {
     });
 
     console.log('WebGPU unavailable, using CPU SPH fallback');
+  }
+
+  const rigidBodies = new RigidBodySystem(containerSize, -9.81);
+
+  if (webgpuRenderer) {
+    const canvas = webgpuRenderer.canvas;
+    let pointerDownPos: { x: number; y: number } | null = null;
+
+    canvas.addEventListener('pointerdown', (e) => {
+      pointerDownPos = { x: e.clientX, y: e.clientY };
+    });
+    canvas.addEventListener('pointerup', (e) => {
+      if (!pointerDownPos) return;
+      const dx = e.clientX - pointerDownPos.x;
+      const dy = e.clientY - pointerDownPos.y;
+      pointerDownPos = null;
+      if (dx * dx + dy * dy > 25) return; // drag threshold — ignore orbit gestures
+
+      const rect = canvas.getBoundingClientRect();
+      const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      const ndcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      rigidBodies.raycastSpawn(ndcX, ndcY, camera, 0.3, 500);
+    });
   }
 
   controls.enableDamping = true;
@@ -189,6 +214,7 @@ async function init() {
         activeCompute.uploadInitialPositions(savedPosX, savedPosY, savedPosZ);
         activeCompute.resetVelocities();
       }
+      rigidBodies.reset();
     },
     onRenderScaleChange: (scale: number) => {
       if (webgpuRenderer) {
@@ -233,6 +259,10 @@ async function init() {
       activeCompute.updateSimConfig(config);
       webgpuRenderer.setThreshold(config.threshold);
 
+      if (gpuCompute && !config.paused) {
+        rigidBodies.writeUniform(gpuCompute.getDevice(), gpuCompute.getObstaclesUniformBuffer());
+      }
+
       profiler?.beginFrame();
       profiler?.setSubsteps(substeps);
       const device = activeCompute.getDevice();
@@ -246,6 +276,12 @@ async function init() {
       device.queue.submit([encoder.finish()]);
       device.popErrorScope().then(err => { if (err) console.error('Frame validation error:', err.message); });
       await device.queue.onSubmittedWorkDone();
+
+      if (gpuCompute && !config.paused && substeps > 0 && rigidBodies.getActiveCount() > 0) {
+        const forces = await gpuCompute.readObstacleForces();
+        rigidBodies.integrateFromForces(forces, substeps, fixedDt);
+      }
+
       await profiler?.readback();
     } else if (glRenderer && waterRenderer) {
       if (!config.paused) {

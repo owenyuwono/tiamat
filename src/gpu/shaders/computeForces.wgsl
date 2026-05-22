@@ -33,6 +33,19 @@ struct Params {
   splatRadiusCells: u32,
 }
 
+struct Obstacle {
+  posRadius: vec4<f32>,
+  velMass: vec4<f32>,
+}
+
+struct ObstacleData {
+  count: u32,
+  _pad0: u32,
+  _pad1: u32,
+  _pad2: u32,
+  obstacles: array<Obstacle, 8>,
+}
+
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> positions: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read> velocities: array<vec4<f32>>;
@@ -41,6 +54,7 @@ struct Params {
 @group(0) @binding(5) var<storage, read_write> xsph: array<vec4<f32>>;
 @group(0) @binding(6) var<storage, read> cellCounts: array<u32>;
 @group(0) @binding(7) var<storage, read> cellEntries: array<u32>;
+@group(0) @binding(8) var<uniform> obstacleData: ObstacleData;
 
 fn hashCell(cx: i32, cy: i32, cz: i32, tableSize: u32) -> u32 {
   let h = (cx * 73856093) ^ (cy * 19349663) ^ (cz * 83492791);
@@ -126,6 +140,44 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
       }
     }
+  }
+
+  // Obstacle mirror particle forces
+  for (var o = 0u; o < obstacleData.count; o++) {
+    let obs = obstacleData.obstacles[o];
+    let obsPos = obs.posRadius.xyz;
+    let obsRadius = obs.posRadius.w;
+    let obsVel = obs.velMass.xyz;
+    if (obsRadius < 1e-6) {
+      continue;
+    }
+
+    let diff = posI - obsPos;
+    let dist = length(diff);
+    let surfaceDist = dist - obsRadius;
+
+    if (surfaceDist >= params.H || dist < 1e-6) {
+      continue;
+    }
+
+    let normal = diff / dist;
+    let mirrorDist = abs(surfaceDist);
+    if (mirrorDist >= params.H) {
+      continue;
+    }
+
+    let hr = params.H - mirrorDist;
+
+    // Pressure force from mirror particle at obstacle surface
+    let mirrorPressure = pressureI;
+    let invMirrorDens = 1.0 / params.restDensity;
+    let avgP = (pressureI + mirrorPressure) * 0.5;
+    let pMag = -params.mass * avgP * invMirrorDens * params.spikyCoeff * hr * hr;
+    force += normal * pMag;
+
+    // Viscosity from obstacle velocity
+    let viscMag = params.viscosity * params.mass * invMirrorDens * params.viscLapCoeff * hr;
+    force += viscMag * (obsVel - velI);
   }
 
   forces[i] = vec4<f32>(force, 0.0);

@@ -47,6 +47,7 @@ export class WebGPURenderer {
   private sprayRenderBindGroup: GPUBindGroup | null = null;
   private sprayRenderUniformBuffer: GPUBuffer;
   private sprayRenderUniformData: Float32Array;
+  private obstaclesUniformBuffer: GPUBuffer | null = null;
 
   private depthTexture: GPUTexture;
   private width = 0;
@@ -207,6 +208,7 @@ export class WebGPURenderer {
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
         { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
         { binding: 6, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 7, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
       ],
     });
     this.waterPipeline = device.createRenderPipeline({
@@ -429,7 +431,18 @@ export class WebGPURenderer {
     this.floorUniformData[18] = ld.z;
   }
 
+  setObstaclesBuffer(buffer: GPUBuffer) {
+    this.obstaclesUniformBuffer = buffer;
+    this.waterBindGroup = this.createWaterBindGroup();
+  }
+
   private createWaterBindGroup(): GPUBindGroup {
+    if (!this.obstaclesUniformBuffer) {
+      this.obstaclesUniformBuffer = this.device.createBuffer({
+        size: 272,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+    }
     return this.device.createBindGroup({
       layout: this.waterBindGroupLayout,
       entries: [
@@ -440,6 +453,7 @@ export class WebGPURenderer {
         { binding: 4, resource: this.repeatSampler },
         { binding: 5, resource: this.foamNoiseTextureView },
         { binding: 6, resource: this.repeatSampler },
+        { binding: 7, resource: { buffer: this.obstaclesUniformBuffer } },
       ],
     });
   }

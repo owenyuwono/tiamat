@@ -10,6 +10,8 @@ import integrateShader from './shaders/integrate.wgsl?raw';
 import clearDensityFieldShader from './shaders/clearDensityField.wgsl?raw';
 import splatDensityShader from './shaders/splatDensity.wgsl?raw';
 import advectSprayShader from './shaders/advectSpray.wgsl?raw';
+import accumulateBodyForcesShader from './shaders/accumulateBodyForces.wgsl?raw';
+import { OBSTACLE_UNIFORM_SIZE, OBSTACLE_FORCES_SIZE } from './RigidBodySystem';
 
 const MAX_PER_CELL = 32;
 const SPRAY_MAX = 32768;
@@ -40,6 +42,9 @@ export class GPUCompute {
   private sprayBuffer: GPUBuffer;
   private sprayCounterBuffer: GPUBuffer;
   private sprayParamsBuffer: GPUBuffer;
+  private obstaclesUniformBuffer: GPUBuffer;
+  private obstacleForcesBuffer: GPUBuffer;
+  private obstacleForcesStaging: GPUBuffer;
   private stagingBuffers: [GPUBuffer, GPUBuffer];
   private currentStaging: number = 0;
   private firstFrame: boolean = true;
@@ -60,6 +65,8 @@ export class GPUCompute {
   private splatDensityBindGroup: GPUBindGroup;
   private advectSprayPipeline: GPUComputePipeline;
   private advectSprayBindGroup: GPUBindGroup;
+  private accumulateBodyForcesPipeline: GPUComputePipeline;
+  private accumulateBodyForcesBindGroup: GPUBindGroup;
 
   private paramsArrayBuffer: ArrayBuffer;
   private paramsF32: Float32Array;
@@ -158,6 +165,18 @@ export class GPUCompute {
     this.sprayParamsBuffer = device.createBuffer({
       size: 48,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.obstaclesUniformBuffer = device.createBuffer({
+      size: OBSTACLE_UNIFORM_SIZE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.obstacleForcesBuffer = device.createBuffer({
+      size: OBSTACLE_FORCES_SIZE,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+    });
+    this.obstacleForcesStaging = device.createBuffer({
+      size: OBSTACLE_FORCES_SIZE,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
     });
     this.stagingBuffers = [
       device.createBuffer({
@@ -278,6 +297,7 @@ export class GPUCompute {
       { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
       { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
     ]);
     this.computeForcesPipeline = computeForcesResult.pipeline;
     this.computeForcesBindGroup = device.createBindGroup({
@@ -291,6 +311,7 @@ export class GPUCompute {
         { binding: 5, resource: { buffer: this.xsphBuffer } },
         { binding: 6, resource: { buffer: this.cellCountsBuffer } },
         { binding: 7, resource: { buffer: this.cellEntriesBuffer } },
+        { binding: 8, resource: { buffer: this.obstaclesUniformBuffer } },
       ],
     });
 
@@ -303,6 +324,7 @@ export class GPUCompute {
       { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
       { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
     ]);
     this.integratePipeline = integrateResult.pipeline;
     this.integrateBindGroup = device.createBindGroup({
@@ -316,6 +338,7 @@ export class GPUCompute {
         { binding: 5, resource: { buffer: this.xsphBuffer } },
         { binding: 6, resource: { buffer: this.sprayBuffer } },
         { binding: 7, resource: { buffer: this.sprayCounterBuffer } },
+        { binding: 8, resource: { buffer: this.obstaclesUniformBuffer } },
       ],
     });
 
@@ -366,6 +389,25 @@ export class GPUCompute {
       ],
     });
 
+    const accBodyResult = this.createPipeline(device, accumulateBodyForcesShader, [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+    ]);
+    this.accumulateBodyForcesPipeline = accBodyResult.pipeline;
+    this.accumulateBodyForcesBindGroup = device.createBindGroup({
+      layout: accBodyResult.bindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.paramsBuffer } },
+        { binding: 1, resource: { buffer: this.obstaclesUniformBuffer } },
+        { binding: 2, resource: { buffer: this.positionsBuffer } },
+        { binding: 3, resource: { buffer: this.densityPressureBuffer } },
+        { binding: 4, resource: { buffer: this.obstacleForcesBuffer } },
+      ],
+    });
+
     device.lost.then((info) => {
       console.error('WebGPU device lost:', info.message);
     });
@@ -402,7 +444,15 @@ export class GPUCompute {
   getDensityFieldBuffer(): GPUBuffer { return this.densityFieldBuffer; }
   getParamsBuffer(): GPUBuffer { return this.paramsBuffer; }
   getSprayBuffer(): GPUBuffer { return this.sprayBuffer; }
+  getObstaclesUniformBuffer(): GPUBuffer { return this.obstaclesUniformBuffer; }
   getFieldResolution(): number { return this.fieldResolution; }
+
+  async readObstacleForces(): Promise<Int32Array> {
+    await this.obstacleForcesStaging.mapAsync(GPUMapMode.READ);
+    const data = new Int32Array(this.obstacleForcesStaging.getMappedRange().slice(0));
+    this.obstacleForcesStaging.unmap();
+    return data;
+  }
 
   encodeStep(encoder: GPUCommandEncoder, substeps: number, profiler?: GPUProfiler | null) {
     const fixedDt = 0.008;
@@ -426,6 +476,7 @@ export class GPUCompute {
     this.device.queue.writeBuffer(this.sprayParamsBuffer, 0, sprayParamsData);
 
     encoder.clearBuffer(this.sprayCounterBuffer, 0, 4);
+    encoder.clearBuffer(this.obstacleForcesBuffer);
 
     this.dispatch(encoder, this.clearGridPipeline, this.clearGridBindGroup,
       Math.ceil(this.tableSize / 256), profiler?.timestampWrites('clearGrid'));
@@ -437,6 +488,8 @@ export class GPUCompute {
         Math.ceil(this.particleCount / 256), profiler?.timestampWrites('computeDensity'));
       this.dispatch(encoder, this.computeForcesPipeline, this.computeForcesBindGroup,
         Math.ceil(this.particleCount / 256), profiler?.timestampWrites('computeForces'));
+      this.dispatch(encoder, this.accumulateBodyForcesPipeline, this.accumulateBodyForcesBindGroup,
+        Math.ceil(this.particleCount / 256), profiler?.timestampWrites('accBodyForces'));
       this.dispatch(encoder, this.integratePipeline, this.integrateBindGroup,
         Math.ceil(this.particleCount / 256), profiler?.timestampWrites('integrate'));
 
@@ -456,6 +509,12 @@ export class GPUCompute {
 
     this.dispatch(encoder, this.advectSprayPipeline, this.advectSprayBindGroup,
       Math.ceil(SPRAY_MAX / 256), profiler?.timestampWrites('advectSpray'));
+
+    encoder.copyBufferToBuffer(
+      this.obstacleForcesBuffer, 0,
+      this.obstacleForcesStaging, 0,
+      OBSTACLE_FORCES_SIZE,
+    );
   }
 
   async step(dt: number, substeps: number) {
@@ -529,6 +588,9 @@ export class GPUCompute {
     this.sprayBuffer.destroy();
     this.sprayCounterBuffer.destroy();
     this.sprayParamsBuffer.destroy();
+    this.obstaclesUniformBuffer.destroy();
+    this.obstacleForcesBuffer.destroy();
+    this.obstacleForcesStaging.destroy();
     this.stagingBuffers[0].destroy();
     this.stagingBuffers[1].destroy();
     if (destroyDevice) this.device.destroy();

@@ -33,6 +33,19 @@ struct Params {
   splatRadiusCells: u32,
 }
 
+struct Obstacle {
+  posRadius: vec4<f32>,
+  velMass: vec4<f32>,
+}
+
+struct ObstacleData {
+  count: u32,
+  _pad0: u32,
+  _pad1: u32,
+  _pad2: u32,
+  obstacles: array<Obstacle, 8>,
+}
+
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read_write> positions: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> velocities: array<vec4<f32>>;
@@ -41,6 +54,7 @@ struct Params {
 @group(0) @binding(5) var<storage, read> xsph: array<vec4<f32>>;
 @group(0) @binding(6) var<storage, read_write> sprayParticles: array<vec4<f32>>;
 @group(0) @binding(7) var<storage, read_write> sprayCounter: array<atomic<u32>>;
+@group(0) @binding(8) var<uniform> obstacleData: ObstacleData;
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -90,6 +104,29 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (pos.z > params.halfContainerZ) {
     pos.z = params.halfContainerZ;
     vel.z *= params.boundaryDamping;
+  }
+
+  // Obstacle SDF collision
+  for (var o = 0u; o < obstacleData.count; o++) {
+    let obs = obstacleData.obstacles[o];
+    let obsPos = obs.posRadius.xyz;
+    let obsRadius = obs.posRadius.w;
+    let obsVel = obs.velMass.xyz;
+    if (obsRadius < 1e-6) {
+      continue;
+    }
+    let diff = pos - obsPos;
+    let dist = length(diff);
+    if (dist < obsRadius && dist > 1e-6) {
+      let normal = diff / dist;
+      pos = obsPos + normal * obsRadius;
+      let vRel = vel - obsVel;
+      let vn = dot(vRel, normal);
+      if (vn < 0.0) {
+        vel -= normal * vn * (1.0 - params.boundaryDamping);
+        vel += obsVel;
+      }
+    }
   }
 
   let densityRatio = densityPressure[i].x / params.restDensity;

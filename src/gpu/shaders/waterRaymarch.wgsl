@@ -16,6 +16,19 @@ struct RenderParams {
   _pad5: f32,
 }
 
+struct Obstacle {
+  posRadius: vec4<f32>,
+  velMass: vec4<f32>,
+}
+
+struct ObstacleData {
+  count: u32,
+  _pad0: u32,
+  _pad1: u32,
+  _pad2: u32,
+  obstacles: array<Obstacle, 8>,
+}
+
 @group(0) @binding(0) var<uniform> params: RenderParams;
 @group(0) @binding(1) var densityTex: texture_3d<f32>;
 @group(0) @binding(2) var densitySampler: sampler;
@@ -23,6 +36,7 @@ struct RenderParams {
 @group(0) @binding(4) var sandSamp: sampler;
 @group(0) @binding(5) var foamNoiseTex: texture_2d<f32>;
 @group(0) @binding(6) var foamNoiseSamp: sampler;
+@group(0) @binding(7) var<uniform> obstacleData: ObstacleData;
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -123,6 +137,72 @@ fn acesFilm(x: vec3<f32>) -> vec3<f32> {
   return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+fn intersectSpheres(ro: vec3<f32>, rd: vec3<f32>) -> vec2<f32> {
+  var nearT = 1e20;
+  var nearIdx = -1.0;
+  for (var o = 0u; o < obstacleData.count; o++) {
+    let c = obstacleData.obstacles[o].posRadius.xyz;
+    let r = obstacleData.obstacles[o].posRadius.w;
+    if (r < 1e-6) { continue; }
+    let oc = ro - c;
+    let b = dot(oc, rd);
+    let det = b * b - (dot(oc, oc) - r * r);
+    if (det > 0.0) {
+      let sq = sqrt(det);
+      let t1 = -b - sq;
+      let t2 = -b + sq;
+      var tHitS = t1;
+      if (tHitS < 0.001) { tHitS = t2; }
+      if (tHitS > 0.001 && tHitS < nearT) {
+        nearT = tHitS;
+        nearIdx = f32(o);
+      }
+    }
+  }
+  return vec2<f32>(nearT, nearIdx);
+}
+
+fn shadeSphere(hitPos: vec3<f32>, center: vec3<f32>, rd: vec3<f32>, underwater: bool) -> vec4<f32> {
+  let N = normalize(hitPos - center);
+  let V = -rd;
+  let L = normalize(params.lightDir);
+  let H = normalize(L + V);
+
+  let baseColor = vec3<f32>(0.85, 0.35, 0.15);
+  let roughness = 0.35;
+
+  let NdotL = max(dot(N, L), 0.0);
+  let NdotV = max(dot(N, V), 0.001);
+  let NdotH = max(dot(N, H), 0.0);
+
+  let D = distributionGGX(NdotH, roughness);
+  let G = geometrySmith(NdotV, NdotL, roughness);
+  let F0 = 0.04;
+  let F = F0 + (1.0 - F0) * pow(1.0 - max(dot(H, V), 0.0), 5.0);
+  let spec = (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
+
+  let ambient = baseColor * 0.35;
+  let diffuse = baseColor * NdotL * 0.65;
+  let specular = vec3<f32>(1.0) * spec * NdotL;
+  var color = ambient + diffuse + specular;
+
+  if (underwater) {
+    let waterDepth = max(hitPos.y, 0.0);
+    let absorption = vec3<f32>(3.0, 1.0, 0.4);
+    let atten = exp(-absorption * (params.domainMax.y - hitPos.y) * 0.3);
+    color *= atten;
+    color = mix(vec3<f32>(0.01, 0.15, 0.4), color, exp(-0.5 * (params.domainMax.y - hitPos.y)));
+  }
+
+  let reflDir = reflect(rd, N);
+  let skyT = clamp(reflDir.y * 0.5 + 0.5, 0.0, 1.0);
+  let skyRef = mix(vec3<f32>(0.85, 0.92, 0.97), vec3<f32>(0.4, 0.7, 0.95), skyT);
+  let fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
+  color = mix(color, skyRef, fresnel * 0.3);
+
+  return vec4<f32>(acesFilm(color), 1.0);
+}
+
 @fragment
 fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
   let ro = params.cameraPosition;
@@ -131,8 +211,22 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
   let farClip = params.invViewProjection * vec4<f32>(ndc, 1.0, 1.0);
   let rd = normalize(farClip.xyz / farClip.w - ro);
 
+  // Sphere intersection (works outside AABB too)
+  let sphereHit = intersectSpheres(ro, rd);
+  let sphereT = sphereHit.x;
+  let sphereIdx = i32(sphereHit.y);
+
   let tHit = intersectAABB(ro, rd);
-  if (tHit.x > tHit.y) {
+  let aabbMiss = tHit.x > tHit.y;
+
+  // Sphere above water (before AABB entry) — render directly
+  if (sphereIdx >= 0 && (aabbMiss || sphereT < max(tHit.x, 0.0))) {
+    let sHitPos = ro + rd * sphereT;
+    let sCenter = obstacleData.obstacles[u32(sphereIdx)].posRadius.xyz;
+    return shadeSphere(sHitPos, sCenter, rd, false);
+  }
+
+  if (aabbMiss) {
     discard;
   }
 
@@ -143,12 +237,46 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
   var t = tNear + stepSize * 0.5;
   var hit = false;
   var hitPos = vec3<f32>(0.0);
+  var hitSphere = false;
+  var hitSphereCenter = vec3<f32>(0.0);
 
   for (var i = 0; i < 400; i++) {
     if (t > tFar) { break; }
     let p = ro + rd * t;
-    let d = sampleDensity(p);
 
+    // Check sphere SDF during march (underwater visibility)
+    var inSphere = false;
+    for (var o = 0u; o < obstacleData.count; o++) {
+      let c = obstacleData.obstacles[o].posRadius.xyz;
+      let r = obstacleData.obstacles[o].posRadius.w;
+      if (r > 1e-6 && length(p - c) < r) {
+        inSphere = true;
+        hitSphereCenter = c;
+        break;
+      }
+    }
+    if (inSphere) {
+      // Bisect to find sphere surface entry
+      var tLo = t - stepSize;
+      var tHi = t;
+      for (var j = 0; j < 6; j++) {
+        let tMid = (tLo + tHi) * 0.5;
+        let pMid = ro + rd * tMid;
+        var inside = false;
+        for (var o2 = 0u; o2 < obstacleData.count; o2++) {
+          let c2 = obstacleData.obstacles[o2].posRadius.xyz;
+          let r2 = obstacleData.obstacles[o2].posRadius.w;
+          if (r2 > 1e-6 && length(pMid - c2) < r2) { inside = true; break; }
+        }
+        if (inside) { tHi = tMid; } else { tLo = tMid; }
+      }
+      hitPos = ro + rd * tHi;
+      hitSphere = true;
+      hit = true;
+      break;
+    }
+
+    let d = sampleDensity(p);
     if (d > params.threshold) {
       var tLo = t - stepSize;
       var tHi = t;
@@ -168,7 +296,17 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
   }
 
   if (!hit) {
+    // Still check if analytical sphere hit is in range
+    if (sphereIdx >= 0 && sphereT < tFar) {
+      let sHitPos = ro + rd * sphereT;
+      let sCenter = obstacleData.obstacles[u32(sphereIdx)].posRadius.xyz;
+      return shadeSphere(sHitPos, sCenter, rd, true);
+    }
     discard;
+  }
+
+  if (hitSphere) {
+    return shadeSphere(hitPos, hitSphereCenter, rd, true);
   }
 
   let grad = estimateNormalRaw(hitPos);
