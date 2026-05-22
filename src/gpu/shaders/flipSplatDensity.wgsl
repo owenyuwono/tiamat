@@ -45,7 +45,8 @@ fn splatJitter(particleIdx: u32) -> vec3f {
   let jx = fract(sin(n * 127.1) * 43758.5453) * 2.0 - 1.0;
   let jy = fract(sin(n * 269.5) * 43758.5453) * 2.0 - 1.0;
   let jz = fract(sin(n * 419.2) * 43758.5453) * 2.0 - 1.0;
-  return vec3f(jx, jy, jz) * params.fieldCellSize * 0.45;
+  // Stronger dither (0.8 cell) to break up grid-scale lumps in the density field.
+  return vec3f(jx, jy, jz) * params.fieldCellSize * 0.8;
 }
 
 @compute @workgroup_size(256)

@@ -86,7 +86,7 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
   var hit = false;
   var hitPos = vec3<f32>(0.0);
 
-  for (var i = 0; i < 280; i++) {
+  for (var i = 0; i < 400; i++) {
     if (t > tFar) { break; }
     let p = ro + rd * t;
     let d = sampleDensity(p);

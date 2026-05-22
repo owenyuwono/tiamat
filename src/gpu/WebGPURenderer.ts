@@ -113,7 +113,7 @@ export class WebGPURenderer {
     this.renderUniformData[16] = domainMin.x;
     this.renderUniformData[17] = domainMin.y;
     this.renderUniformData[18] = domainMin.z;
-    this.renderUniformData[19] = 0.75; // threshold
+    this.renderUniformData[19] = 0.55; // threshold
     // domainMax (offset 20)
     this.renderUniformData[20] = domainMax.x;
     this.renderUniformData[21] = domainMax.y;

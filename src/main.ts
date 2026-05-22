@@ -21,7 +21,7 @@ function computeContainerSize(particleCount: number): THREE.Vector3 {
 }
 
 function computeFieldResolution(containerSide: number): number {
-  return Math.min(128, Math.round(containerSide / 0.05));
+  return Math.min(160, Math.round(containerSide / 0.04));
 }
 
 const scene = new THREE.Scene();

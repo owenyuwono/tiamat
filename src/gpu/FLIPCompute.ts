@@ -131,7 +131,7 @@ export class FLIPCompute {
     const fieldCellSize = domainSize / fieldResolution;
     const fieldInvCellSize = 1 / fieldCellSize;
     const splatRadius2 = splatRadius * splatRadius;
-    const splatRadiusCells = Math.ceil(splatRadius / fieldCellSize);
+    const splatRadiusCells = Math.max(2, Math.ceil(splatRadius / fieldCellSize));
 
     this.paramsU32[0] = particleCount;
     this.paramsU32[1] = tableSize;
@@ -356,26 +356,42 @@ export class FLIPCompute {
   }
 
   uploadInitialPositions(posX: Float32Array, posY: Float32Array, posZ: Float32Array) {
-    const halfCell = this.paramsF32[28] * 0.5;
-    const spacing = SPH.smoothingRadius * 0.5;
-    const jitter = spacing * 0.45;
-    // Rotate ~22.5° so lattice columns aren't parallel to container walls.
-    const rotY = Math.PI / 8;
-    const cosR = Math.cos(rotY);
-    const sinR = Math.sin(rotY);
+    // Fully random placement inside the initial block bounds for FLIP.
+    // This eliminates any lattice/grid imprint from the start (no cubic lattice at all).
+    // Compute AABB from the (lattice) positions passed in, then inset slightly.
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    let minZ = Infinity, maxZ = -Infinity;
+    for (let i = 0; i < this.particleCount; i++) {
+      if (posX[i] < minX) minX = posX[i];
+      if (posX[i] > maxX) maxX = posX[i];
+      if (posY[i] < minY) minY = posY[i];
+      if (posY[i] > maxY) maxY = posY[i];
+      if (posZ[i] < minZ) minZ = posZ[i];
+      if (posZ[i] > maxZ) maxZ = posZ[i];
+    }
+    const margin = (maxX - minX) * 0.02; // small inset so particles stay well inside on first frame
+    const sx = minX + margin;
+    const ex = maxX - margin;
+    const sy = minY + margin * 0.5;
+    const ey = maxY;
+    const sz = minZ + margin;
+    const ez = maxZ - margin;
+
     const packed = new Float32Array(this.particleCount * 4);
     for (let i = 0; i < this.particleCount; i++) {
-      const hx = ((i * 73856093) % 1000) / 1000 - 0.5;
-      const hy = ((i * 19349663) % 1000) / 1000 - 0.5;
-      const hz = ((i * 83492791) % 1000) / 1000 - 0.5;
+      // Per-particle deterministic "random" in [0,1) using large primes.
+      const rx = ((i * 73856093) % 100000) / 100000;
+      const ry = ((i * 19349663) % 100000) / 100000;
+      const rz = ((i * 83492791) % 100000) / 100000;
 
-      const lx = posX[i] + halfCell + hx * jitter;
-      const ly = posY[i] + halfCell + hy * jitter * 0.35;
-      const lz = posZ[i] + halfCell + hz * jitter;
+      const px = sx + rx * (ex - sx);
+      const py = sy + ry * (ey - sy);
+      const pz = sz + rz * (ez - sz);
 
-      packed[i * 4] = lx * cosR - lz * sinR;
-      packed[i * 4 + 1] = ly;
-      packed[i * 4 + 2] = lx * sinR + lz * cosR;
+      packed[i * 4] = px;
+      packed[i * 4 + 1] = py;
+      packed[i * 4 + 2] = pz;
     }
     this.device.queue.writeBuffer(this.positionsBuffer, 0, packed);
   }

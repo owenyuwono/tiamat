@@ -158,7 +158,7 @@ export class GPUCompute {
     const fieldCellSize = domainSize / fieldResolution;
     const fieldInvCellSize = 1 / fieldCellSize;
     const splatRadius2 = splatRadius * splatRadius;
-    const splatRadiusCells = Math.ceil(splatRadius / fieldCellSize);
+    const splatRadiusCells = Math.max(2, Math.ceil(splatRadius / fieldCellSize));
 
     this.paramsU32[0] = particleCount;
     this.paramsU32[1] = this.tableSize;
