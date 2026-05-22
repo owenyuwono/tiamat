@@ -21,6 +21,8 @@ struct RenderParams {
 @group(0) @binding(2) var densitySampler: sampler;
 @group(0) @binding(3) var sandTex: texture_2d<f32>;
 @group(0) @binding(4) var sandSamp: sampler;
+@group(0) @binding(5) var foamNoiseTex: texture_2d<f32>;
+@group(0) @binding(6) var foamNoiseSamp: sampler;
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -189,7 +191,11 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
   let thinness = 1.0 - smoothstep(params.threshold, params.threshold * 2.5, rg.r);
   let spray = thinness * smoothstep(0.1, 0.5, gradLen) * topSurface;
 
-  let foam = clamp(max(max(impactFoam, curvatureFoam * 0.4), spray * 0.7) * topSurface, 0.0, 1.0);
+  let rawFoam = max(max(impactFoam, curvatureFoam * 0.4), spray * 0.7) * topSurface;
+  let foamUV = hitPos.xz * 2.5;
+  let foamNoise = textureSampleLevel(foamNoiseTex, foamNoiseSamp, foamUV, 0.0).r;
+  let foamDetail = mix(0.3, 1.0, foamNoise);
+  let foam = clamp(rawFoam * foamDetail, 0.0, 1.0);
 
   let cosTheta = max(dot(N, V), 0.0);
   let fresnel = 0.02 + 0.98 * pow(1.0 - cosTheta, 5.0);

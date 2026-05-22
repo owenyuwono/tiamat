@@ -66,6 +66,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   var force = vec3<f32>(0.0, params.gravity * densityI, 0.0);
   var xsphAcc = vec3<f32>(0.0);
+  var trappedAir = 0.0;
 
   for (var dx = -1; dx <= 1; dx++) {
     for (var dy = -1; dy <= 1; dy++) {
@@ -115,40 +116,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
           let rhoAvg = (densityI + densityJ) * 0.5;
           let xsphW = params.mass / rhoAvg * w;
           xsphAcc += (velJ - velI) * xsphW;
+
+          let vDiff = length(velJ - velI);
+          if (vDiff > 1e-6) {
+            let velDir = (velJ - velI) / vDiff;
+            let dirAlign = 1.0 - dot(velDir, dir);
+            trappedAir += params.mass * invDensJ * vDiff * max(dirAlign, 0.0) * w;
+          }
         }
       }
     }
   }
 
-  let wallDist = params.collisionRadius * 2.0;
-  let wallK = params.collisionStiffness * 2.0;
-
-  let dLeft = posI.x - (-params.halfContainerX);
-  let dRight = params.halfContainerX - posI.x;
-  let dBottom = posI.y;
-  let dTop = params.containerMaxY - posI.y;
-  let dBack = posI.z - (-params.halfContainerZ);
-  let dFront = params.halfContainerZ - posI.z;
-
-  if (dLeft < wallDist) {
-    force.x += wallK * (wallDist - dLeft);
-  }
-  if (dRight < wallDist) {
-    force.x -= wallK * (wallDist - dRight);
-  }
-  if (dBottom < wallDist) {
-    force.y += wallK * (wallDist - dBottom);
-  }
-  if (dTop < wallDist) {
-    force.y -= wallK * (wallDist - dTop);
-  }
-  if (dBack < wallDist) {
-    force.z += wallK * (wallDist - dBack);
-  }
-  if (dFront < wallDist) {
-    force.z -= wallK * (wallDist - dFront);
-  }
-
   forces[i] = vec4<f32>(force, 0.0);
-  xsph[i] = vec4<f32>(xsphAcc, 0.0);
+  xsph[i] = vec4<f32>(xsphAcc, trappedAir);
 }

@@ -36,7 +36,8 @@ struct Params {
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> positions: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read> xsph: array<vec4<f32>>;
-@group(0) @binding(3) var<storage, read_write> densityField: array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read> velocities: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read_write> densityField: array<atomic<u32>>;
 
 const FIXED_POINT_SCALE: u32 = 10000u;
 
@@ -49,6 +50,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let pos = positions[i].xyz;
   let impact = length(xsph[i].xyz);
+  let trappedAir = xsph[i].w;
+  let kineticSurface = velocities[i].w;
+  let foamSignal = impact * 5.0 + trappedAir * 3.0 + kineticSurface * 0.5;
 
   let res = i32(params.fieldResolution);
   let resM1 = res - 1;
@@ -85,7 +89,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
           let w = t * t * t;
           let idx = u32((iz * res * res + iy * res + ix) * 2);
           atomicAdd(&densityField[idx], u32(w * f32(FIXED_POINT_SCALE)));
-          atomicAdd(&densityField[idx + 1u], u32(w * impact * 5.0 * f32(FIXED_POINT_SCALE)));
+          atomicAdd(&densityField[idx + 1u], u32(w * foamSignal * f32(FIXED_POINT_SCALE)));
         }
       }
     }

@@ -39,6 +39,8 @@ struct Params {
 @group(0) @binding(3) var<storage, read> forces: array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read> densityPressure: array<vec2<f32>>;
 @group(0) @binding(5) var<storage, read> xsph: array<vec4<f32>>;
+@group(0) @binding(6) var<storage, read_write> sprayParticles: array<vec4<f32>>;
+@group(0) @binding(7) var<storage, read_write> sprayCounter: array<atomic<u32>>;
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -90,6 +92,49 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     vel.z *= params.boundaryDamping;
   }
 
+  let densityRatio = densityPressure[i].x / params.restDensity;
+  let surfaceness = max(0.0, 1.0 - densityRatio);
+  let speed = length(vel);
+  let kineticSurface = speed * speed * surfaceness;
+  let trappedAir = xsph[i].w;
+
+  // Spray emission — burst-emit multiple particles proportional to collision strength
+  let emissionPotential = kineticSurface * (trappedAir + 0.1);
+  if (densityRatio < 0.85 && emissionPotential > 1.0) {
+    let burstCount = u32(clamp(emissionPotential * 0.7, 1.0, 4.0));
+    var seed = i * 2654435761u;
+    for (var b = 0u; b < burstCount; b++) {
+      seed ^= seed << 13u; seed ^= seed >> 17u; seed ^= seed << 5u;
+      let rx = (f32(seed & 0xFFFFu) / 65535.0 - 0.5) * 0.4;
+      seed ^= seed << 13u; seed ^= seed >> 17u; seed ^= seed << 5u;
+      let ry = f32(seed & 0xFFFFu) / 65535.0 * 0.3;
+      seed ^= seed << 13u; seed ^= seed >> 17u; seed ^= seed << 5u;
+      let rz = (f32(seed & 0xFFFFu) / 65535.0 - 0.5) * 0.4;
+      let slot = atomicAdd(&sprayCounter[0], 1u);
+      let sIdx = (slot % 32768u) * 2u;
+      let lt = clamp(emissionPotential * 0.3, 0.5, 2.5);
+      let jitter = vec3<f32>(rx, ry, rz);
+      sprayParticles[sIdx] = vec4<f32>(pos + jitter * 0.02, lt);
+      sprayParticles[sIdx + 1u] = vec4<f32>(vel * (0.6 + f32(b) * 0.15) + jitter * speed, 0.0);
+    }
+  }
+
+  // Bubble emission — burst-emit proportional to trapped air
+  if (densityRatio > 1.1 && trappedAir > 1.5) {
+    let burstCount = u32(clamp(trappedAir * 0.5, 1.0, 3.0));
+    var bSeed = i * 1664525u + 1013904223u;
+    for (var b = 0u; b < burstCount; b++) {
+      bSeed ^= bSeed << 13u; bSeed ^= bSeed >> 17u; bSeed ^= bSeed << 5u;
+      let rx = (f32(bSeed & 0xFFFFu) / 65535.0 - 0.5) * 0.06;
+      bSeed ^= bSeed << 13u; bSeed ^= bSeed >> 17u; bSeed ^= bSeed << 5u;
+      let rz = (f32(bSeed & 0xFFFFu) / 65535.0 - 0.5) * 0.06;
+      let slot = atomicAdd(&sprayCounter[0], 1u);
+      let bIdx = (slot % 32768u) * 2u;
+      sprayParticles[bIdx] = vec4<f32>(pos.x + rx, pos.y, pos.z + rz, 2.0);
+      sprayParticles[bIdx + 1u] = vec4<f32>(0.0, 0.3, 0.0, 1.0);
+    }
+  }
+
   positions[i] = vec4<f32>(pos, positions[i].w);
-  velocities[i] = vec4<f32>(vel, velocities[i].w);
+  velocities[i] = vec4<f32>(vel, kineticSurface);
 }

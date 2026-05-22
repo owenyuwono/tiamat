@@ -93,6 +93,7 @@ async function init() {
     }
 
     gpuCompute.uploadInitialPositions(savedPosX, savedPosY, savedPosZ);
+    webgpuRenderer.initSprayRenderer(gpuCompute.getSprayBuffer());
     webgpuRenderer.loadFloorTexture('/sand_diff.jpg');
     console.log('WebGPU render + compute enabled');
   } else {
@@ -133,6 +134,7 @@ async function init() {
     webgpuRenderer.rebindComputeBuffers(
       activeCompute.getDensityFieldBuffer(),
       activeCompute.getParamsBuffer(),
+      algo === 'sph' ? gpuCompute.getSprayBuffer() : undefined,
     );
   }
 
@@ -163,6 +165,7 @@ async function init() {
     webgpuRenderer.rebindComputeBuffers(
       activeCompute.getDensityFieldBuffer(),
       activeCompute.getParamsBuffer(),
+      gpuCompute.getSprayBuffer(),
     );
 
     profiler?.setParticleCount(count);

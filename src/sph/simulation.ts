@@ -240,9 +240,6 @@ export class SPHSimulation {
 
     const halfX = this.containerSize.x / 2;
     const halfZ = this.containerSize.z / 2;
-    const maxY = this.containerSize.y;
-    const wallDist = SPH.collisionRadius * 2;
-    const wallK = SPH.collisionStiffness * 2;
 
     const xsX = this.xsphX, xsY = this.xsphY, xsZ = this.xsphZ;
 
@@ -322,19 +319,6 @@ export class SPHSimulation {
         }
       }
 
-      // Wall repulsion
-      const dL = xi - (-halfX);
-      const dR = halfX - xi;
-      const dB = yi;
-      const dT = maxY - yi;
-      const dBk = zi - (-halfZ);
-      const dF = halfZ - zi;
-      if (dL < wallDist) fxi += wallK * (wallDist - dL);
-      if (dR < wallDist) fxi -= wallK * (wallDist - dR);
-      if (dB < wallDist) fyi += wallK * (wallDist - dB);
-      if (dT < wallDist) fyi -= wallK * (wallDist - dT);
-      if (dBk < wallDist) fzi += wallK * (wallDist - dBk);
-      if (dF < wallDist) fzi -= wallK * (wallDist - dF);
 
       fx[i] = fxi;
       fy[i] = fyi;

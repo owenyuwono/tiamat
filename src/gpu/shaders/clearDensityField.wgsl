@@ -45,7 +45,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let isImpact = (gid.x % 2u) == 1u;
   if (isImpact) {
     let prev = atomicLoad(&densityField[gid.x]);
-    atomicStore(&densityField[gid.x], u32(f32(prev) * 0.97));
+    atomicStore(&densityField[gid.x], u32(f32(prev) * 0.985));
   } else {
     atomicStore(&densityField[gid.x], 0u);
   }

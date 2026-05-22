@@ -98,11 +98,12 @@ All three implement the same interface: `encodeStep()`, `uploadInitialPositions(
 - **PBR water shader** (`waterRaymarch.wgsl`): 6-tap central difference normals, GGX/Cook-Torrance specular, volumetric shadow rays (16 steps toward light), density-field ambient occlusion (4 samples along normal), per-channel Beer-Lambert absorption (tropical turquoise palette), ACES filmic tone mapping
 - **Refraction**: water shader samples sand texture via refracted ray (Snell's law, IOR 1.33). Refracted ray intersects floor plane (y=0), samples sand texture at that position. Shallow water blends toward floor color, deep water stays blue
 - **Reflection**: sky gradient (warm horizon → sky blue zenith) based on `reflect(rd, N)` direction, blended by Fresnel
-- **Foam system**: three sources combined — (1) XSPH impact magnitude (turbulence detection, amplified 5x during splatting), (2) curvature foam (gradLen/density for stretched surfaces), (3) spray (thin fluid edges just above threshold with steep gradient). Foam persists via temporal decay: `clearDensityField.wgsl` decays impact channel by 0.97/frame instead of zeroing, giving ~0.77s half-life
+- **Foam system** (Ihmsen 2012-inspired): density field G channel stores foam signal from three physics-based sources: (1) XSPH impact magnitude (turbulence), (2) trapped-air potential from `computeForces.wgsl` (converging flows that trap air, `xsph[i].w`), (3) kinetic-surface metric from `integrate.wgsl` (fast surface particles, `velocities[i].w`). Combined in `splatDensity.wgsl` as `impact*5 + trappedAir*3 + kineticSurface*0.5`. Foam noise texture (`generateWorleyNoise.ts`, 256×256 Worley) adds bubble granularity in the raymarcher. Foam persists via temporal decay in `clearDensityField.wgsl`
+- **Spray/bubble particle system**: 8192-slot ring buffer shared between spray (airborne droplets) and bubbles (submerged air). Both emitted from `integrate.wgsl` using trapped-air potential — spray from surface particles (`densityRatio < 0.8, emissionPotential > 1.5`), bubbles from submerged particles (`densityRatio > 1.2, trappedAir > 2.0`). Differentiated by `velAge.w` (0=spray, 1=bubble). `advectSpray.wgsl` handles physics: spray is ballistic with gravity/drag, bubbles rise with buoyancy. Spray→foam transition: spray re-entering water injects foam into density field G channel via `atomicAdd`. Bubbles inject foam trail as they rise and burst into foam at the surface. Rendered as additive point sprites (`sprayRender.wgsl`); bubbles are not rendered as sprites (submerged, visible only through foam injection into raymarched volume)
 - Real transparency: alpha driven by `depthFactor` (secondary ray march thickness), Fresnel mixes sky gradient as reflection
 - Spatial hash cell indices offset by `halfContainerX`/`halfContainerZ` so all indices are non-negative — the prime-number hash function produces asymmetric bucket distributions for negative i32 inputs, causing one-sided turbulence from uneven `MAX_PER_CELL` overflow. Must keep offset consistent across insertParticles, computeDensity, computeForces (GPU), and simulation.ts (CPU)
 - **Tropical water color**: Beer-Lambert absorption `vec3(3.0, 1.0, 0.4)` — red absorbs fastest, blue least. Scatter color `(0.2, 0.7, 0.65)` turquoise, deep color `(0.01, 0.15, 0.4)` navy. Background is sky blue `0x87CEEB`
-- **SPH cell entries buffer scales with particle count**: `tableSize = nextPowerOfTwo(N * 3)`, buffer = `tableSize * MAX_PER_CELL * 4`. At 100k particles ≈ 67MB. Reducing MAX_PER_CELL below 32 or tableSize multiplier below 3 causes neighbor-miss artifacts (pressure spikes, particles exploding upward on impact) — do not reduce for memory savings without validating settling behavior
+- **SPH cell entries buffer scales with particle count**: `tableSize = nextPowerOfTwo(N * 2)`, buffer = `tableSize * MAX_PER_CELL * 4`. At 100k with MAX_PER_CELL=16 ≈ ~17MB
 - **splatRadiusCells floor of 2**: prevents single-cell splatting when splatRadius ≈ fieldCellSize, which produces blocky/voxel artifacts in the density field
 
 ## Tuning knobs
@@ -111,10 +112,12 @@ All three implement the same interface: `encodeStep()`, `uploadInitialPositions(
 - `SimConfig.ts` defaults — particle count (100k), splat radius (0.10), density threshold (0.65), render scale (0.5), fixed dt (0.004), max substeps (6), lightEnabled toggle
 - `main.ts` — container size (4×4×4), field resolution (100)
 - `waterRaymarch.wgsl` — foam thresholds (`smoothstep(0.002, 0.1)` for impact, `smoothstep(0.3, 0.8)` for curvature), step size (0.025), iterations (400), absorption `vec3(3.0, 1.0, 0.4)`, GGX roughness (0.06 water, 0.5 foam), shadow extinction (3.0), Fresnel reflection strength (0.6), alpha floor (0.3)
-- `splatDensity.wgsl` — impact amplification (5x) to survive box filter
-- `clearDensityField.wgsl` — foam decay rate (0.97/frame)
-- `computeForces.wgsl` — mirror boundary forces (pressure-based, replaces old wall springs)
-- `integrate.wgsl` — velocity damping (`1.0 - 1.5 * dt`), XSPH applied to position (not velocity)
+- `splatDensity.wgsl` — foam signal weights: `impact*5 + trappedAir*3 + kineticSurface*0.5`
+- `clearDensityField.wgsl` — foam decay rate (per frame, controls foam persistence half-life)
+- `computeForces.wgsl` — mirror boundary forces (pressure-based, replaces old wall springs), trapped-air potential in `xsph.w`
+- `integrate.wgsl` — velocity damping (`1.0 - 0.5 * dt`), spray emission threshold (emissionPotential > 1.5), bubble emission (trappedAir > 2.0, densityRatio > 1.2)
+- `advectSpray.wgsl` — spray gravity (-15), bubble buoyancy (0.4× |gravity|), bubble foam trail (0.3 per frame), spray→foam re-entry (speed×2), bubble pop foam (2.0)
+- `sprayRender.wgsl` / `WebGPURenderer.ts` — spray point size, alpha falloff
 
 ## SPH parameter coupling — critical constraints
 
@@ -124,7 +127,7 @@ Specific constraints discovered through debugging:
 - **Mirror boundary forces replaced wall springs**: `computeForces.wgsl` now uses pressure-based mirror forces at all 6 walls (same approach as `computeDensity.wgsl` mirror particles). The old wall springs are removed. Mirror forces produce smoother boundary behavior than spring forces
 - **XSPH on position**: XSPH correction is now applied to position update (`pos += (vel + eps * xsph) * dt`) rather than velocity. This is the Monaghan formulation. Current ε=0.15 (from SimConfig xsphEpsilon)
 - **dt must be consistent**: `main.ts` fixedDt and `GPUCompute.ts` fixedDt must match (both 0.008). A mismatch halves the effective damping and changes substep count
-- **MAX_PER_CELL=32 and tableSize=N*3 are minimum**: reducing these causes neighbor-miss artifacts — density is underestimated during compression, then pressure explodes when neighbors are rediscovered. At 100k particles this uses ~67MB which is acceptable
+- **MAX_PER_CELL=16 and tableSize=N*2**: reduced from 32/3x to save memory (~17MB vs ~67MB at 100k). May cause neighbor-miss artifacts at very high particle counts — validate settling behavior if increasing beyond 360k
 - **Velocity damping**: `vel *= 1.0 - 1.5 * dt` — higher than original (was 0.5) to help settling with the new mirror forces
 
 ## Known issues
@@ -137,6 +140,6 @@ Specific constraints discovered through debugging:
 
 - Container is fixed at 4×4×4. At 100k particles the block fills ~51% of the container. Higher counts pack denser
 - Raymarching iterations (400) × step size (0.025) = 10 units, covers the 4×4×4 diagonal (√48 ≈ 6.93) with margin
-- SPH cell entries buffer: `nextPowerOfTwo(N * 3) * 32 * 4` bytes. At 100k ≈ 67MB, at 1M ≈ 512MB — test on target GPU before going higher
+- SPH cell entries buffer: `nextPowerOfTwo(N * 2) * 16 * 4` bytes. At 100k ≈ 17MB — much reduced from old settings
 - Stiffness of 50 (original) causes supersonic compression at high particle counts — increased to 150 for stability
 - Raymarching is the main GPU bottleneck on laptops — fullscreen shader runs 400 steps × multiple texture samples per hit pixel. Reducing render scale or step count are the main perf levers

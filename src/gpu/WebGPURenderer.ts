@@ -3,6 +3,8 @@ import type { GPUProfiler } from './GPUProfiler';
 import bufferToTextureShader from './shaders/bufferToTexture.wgsl?raw';
 import waterRaymarchShader from './shaders/waterRaymarch.wgsl?raw';
 import floorShader from './shaders/floor.wgsl?raw';
+import sprayRenderShader from './shaders/sprayRender.wgsl?raw';
+import { generateWorleyNoise } from './generateWorleyNoise';
 
 export class WebGPURenderer {
   private device: GPUDevice;
@@ -17,6 +19,8 @@ export class WebGPURenderer {
 
   private sandTexture: GPUTexture;
   private sandTextureView: GPUTextureView;
+  private foamNoiseTexture: GPUTexture;
+  private foamNoiseTextureView: GPUTextureView;
 
   private bufferToTexPipeline: GPUComputePipeline;
   private bufferToTexBindGroupLayout: GPUBindGroupLayout;
@@ -38,6 +42,12 @@ export class WebGPURenderer {
   private floorUniformData: Float32Array;
   private floorVertexCount: number;
 
+  private sprayRenderPipeline: GPURenderPipeline | null = null;
+  private sprayRenderBindGroupLayout: GPUBindGroupLayout | null = null;
+  private sprayRenderBindGroup: GPUBindGroup | null = null;
+  private sprayRenderUniformBuffer: GPUBuffer;
+  private sprayRenderUniformData: Float32Array;
+
   private depthTexture: GPUTexture;
   private width = 0;
   private height = 0;
@@ -45,6 +55,9 @@ export class WebGPURenderer {
   private _invVP = new THREE.Matrix4();
   private _vp = new THREE.Matrix4();
   private _camPos = new THREE.Vector3();
+  private _camRight = new THREE.Vector3();
+  private _camUp = new THREE.Vector3();
+  private _camFwd = new THREE.Vector3();
 
   private static readonly LIGHT_DIR = new THREE.Vector3(5, 8, 5).normalize();
 
@@ -110,6 +123,26 @@ export class WebGPURenderer {
       [1, 1],
     );
 
+    const noiseData = generateWorleyNoise(256, 12);
+    this.foamNoiseTexture = device.createTexture({
+      size: [256, 256],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    this.foamNoiseTextureView = this.foamNoiseTexture.createView();
+    device.queue.copyExternalImageToTexture(
+      { source: noiseData },
+      { texture: this.foamNoiseTexture },
+      [256, 256],
+    );
+
+    // Spray render uniform buffer (96 bytes: mat4 VP + vec3 camRight + f32 pointSize + vec3 camUp + pad)
+    this.sprayRenderUniformData = new Float32Array(24);
+    this.sprayRenderUniformBuffer = device.createBuffer({
+      size: 96,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
     // Buffer-to-texture compute pipeline
     const b2tModule = device.createShaderModule({ code: bufferToTextureShader });
     this.bufferToTexBindGroupLayout = device.createBindGroupLayout({
@@ -172,6 +205,8 @@ export class WebGPURenderer {
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 6, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
       ],
     });
     this.waterPipeline = device.createRenderPipeline({
@@ -191,16 +226,7 @@ export class WebGPURenderer {
       primitive: { topology: 'triangle-list' },
       depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'always' },
     });
-    this.waterBindGroup = device.createBindGroup({
-      layout: this.waterBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.renderUniformBuffer } },
-        { binding: 1, resource: this.densityTextureView },
-        { binding: 2, resource: this.linearSampler },
-        { binding: 3, resource: this.sandTextureView },
-        { binding: 4, resource: this.repeatSampler },
-      ],
-    });
+    this.waterBindGroup = this.createWaterBindGroup();
 
     // Floor pipeline
     const floorModule = device.createShaderModule({ code: floorShader });
@@ -365,6 +391,27 @@ export class WebGPURenderer {
     pass.setBindGroup(0, this.waterBindGroup);
     pass.draw(3);
 
+    // Draw spray particles
+    if (this.sprayRenderPipeline && this.sprayRenderBindGroup) {
+      const vpE2 = this._vp.elements;
+      for (let i = 0; i < 16; i++) {
+        this.sprayRenderUniformData[i] = vpE2[i];
+      }
+      camera.matrixWorld.extractBasis(this._camRight, this._camUp, this._camFwd);
+      this.sprayRenderUniformData[16] = this._camRight.x;
+      this.sprayRenderUniformData[17] = this._camRight.y;
+      this.sprayRenderUniformData[18] = this._camRight.z;
+      this.sprayRenderUniformData[19] = 0.008;
+      this.sprayRenderUniformData[20] = this._camUp.x;
+      this.sprayRenderUniformData[21] = this._camUp.y;
+      this.sprayRenderUniformData[22] = this._camUp.z;
+      this.device.queue.writeBuffer(this.sprayRenderUniformBuffer, 0, this.sprayRenderUniformData);
+
+      pass.setPipeline(this.sprayRenderPipeline);
+      pass.setBindGroup(0, this.sprayRenderBindGroup);
+      pass.draw(4, 32768);
+    }
+
     pass.end();
   }
 
@@ -380,6 +427,21 @@ export class WebGPURenderer {
     this.floorUniformData[16] = ld.x;
     this.floorUniformData[17] = ld.y;
     this.floorUniformData[18] = ld.z;
+  }
+
+  private createWaterBindGroup(): GPUBindGroup {
+    return this.device.createBindGroup({
+      layout: this.waterBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.renderUniformBuffer } },
+        { binding: 1, resource: this.densityTextureView },
+        { binding: 2, resource: this.linearSampler },
+        { binding: 3, resource: this.sandTextureView },
+        { binding: 4, resource: this.repeatSampler },
+        { binding: 5, resource: this.foamNoiseTextureView },
+        { binding: 6, resource: this.repeatSampler },
+      ],
+    });
   }
 
   async loadFloorTexture(url: string) {
@@ -410,19 +472,47 @@ export class WebGPURenderer {
       ],
     });
 
-    this.waterBindGroup = this.device.createBindGroup({
-      layout: this.waterBindGroupLayout,
+    this.waterBindGroup = this.createWaterBindGroup();
+  }
+
+  initSprayRenderer(sprayBuffer: GPUBuffer) {
+    const sprayModule = this.device.createShaderModule({ code: sprayRenderShader });
+
+    this.sprayRenderBindGroupLayout = this.device.createBindGroupLayout({
       entries: [
-        { binding: 0, resource: { buffer: this.renderUniformBuffer } },
-        { binding: 1, resource: this.densityTextureView },
-        { binding: 2, resource: this.linearSampler },
-        { binding: 3, resource: this.sandTextureView },
-        { binding: 4, resource: this.repeatSampler },
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+      ],
+    });
+
+    this.sprayRenderPipeline = this.device.createRenderPipeline({
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.sprayRenderBindGroupLayout] }),
+      vertex: { module: sprayModule, entryPoint: 'vs_main' },
+      fragment: {
+        module: sprayModule,
+        entryPoint: 'fs_main',
+        targets: [{
+          format: this.format,
+          blend: {
+            color: { srcFactor: 'src-alpha', dstFactor: 'one' },
+            alpha: { srcFactor: 'one', dstFactor: 'one' },
+          },
+        }],
+      },
+      primitive: { topology: 'triangle-strip' },
+      depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less' },
+    });
+
+    this.sprayRenderBindGroup = this.device.createBindGroup({
+      layout: this.sprayRenderBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.sprayRenderUniformBuffer } },
+        { binding: 1, resource: { buffer: sprayBuffer } },
       ],
     });
   }
 
-  rebindComputeBuffers(densityFieldBuffer: GPUBuffer, paramsBuffer: GPUBuffer) {
+  rebindComputeBuffers(densityFieldBuffer: GPUBuffer, paramsBuffer: GPUBuffer, sprayBuffer?: GPUBuffer) {
     this.bufferToTexBindGroup = this.device.createBindGroup({
       layout: this.bufferToTexBindGroupLayout,
       entries: [
@@ -431,14 +521,25 @@ export class WebGPURenderer {
         { binding: 2, resource: this.densityTextureView },
       ],
     });
+    if (sprayBuffer && this.sprayRenderBindGroupLayout) {
+      this.sprayRenderBindGroup = this.device.createBindGroup({
+        layout: this.sprayRenderBindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.sprayRenderUniformBuffer } },
+          { binding: 1, resource: { buffer: sprayBuffer } },
+        ],
+      });
+    }
   }
 
   dispose() {
     this.canvas.remove();
     this.densityTexture.destroy();
     this.sandTexture.destroy();
+    this.foamNoiseTexture.destroy();
     this.depthTexture.destroy();
     this.renderUniformBuffer.destroy();
+    this.sprayRenderUniformBuffer.destroy();
     this.floorUniformBuffer.destroy();
     this.floorVertexBuffer.destroy();
   }

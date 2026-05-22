@@ -9,8 +9,10 @@ import computeForcesShader from './shaders/computeForces.wgsl?raw';
 import integrateShader from './shaders/integrate.wgsl?raw';
 import clearDensityFieldShader from './shaders/clearDensityField.wgsl?raw';
 import splatDensityShader from './shaders/splatDensity.wgsl?raw';
+import advectSprayShader from './shaders/advectSpray.wgsl?raw';
 
 const MAX_PER_CELL = 32;
+const SPRAY_MAX = 32768;
 const FIXED_POINT_SCALE = 10000.0;
 
 function nextPowerOfTwo(n: number): number {
@@ -35,6 +37,9 @@ export class GPUCompute {
   private cellEntriesBuffer: GPUBuffer;
   private densityFieldBuffer: GPUBuffer;
   private paramsBuffer: GPUBuffer;
+  private sprayBuffer: GPUBuffer;
+  private sprayCounterBuffer: GPUBuffer;
+  private sprayParamsBuffer: GPUBuffer;
   private stagingBuffers: [GPUBuffer, GPUBuffer];
   private currentStaging: number = 0;
   private firstFrame: boolean = true;
@@ -53,6 +58,8 @@ export class GPUCompute {
   private clearDensityFieldBindGroup: GPUBindGroup;
   private splatDensityPipeline: GPUComputePipeline;
   private splatDensityBindGroup: GPUBindGroup;
+  private advectSprayPipeline: GPUComputePipeline;
+  private advectSprayBindGroup: GPUBindGroup;
 
   private paramsArrayBuffer: ArrayBuffer;
   private paramsF32: Float32Array;
@@ -138,6 +145,18 @@ export class GPUCompute {
     });
     this.paramsBuffer = device.createBuffer({
       size: 128,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.sprayBuffer = device.createBuffer({
+      size: SPRAY_MAX * 32,
+      usage: GPUBufferUsage.STORAGE,
+    });
+    this.sprayCounterBuffer = device.createBuffer({
+      size: 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.sprayParamsBuffer = device.createBuffer({
+      size: 48,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.stagingBuffers = [
@@ -282,6 +301,8 @@ export class GPUCompute {
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
     ]);
     this.integratePipeline = integrateResult.pipeline;
     this.integrateBindGroup = device.createBindGroup({
@@ -293,6 +314,8 @@ export class GPUCompute {
         { binding: 3, resource: { buffer: this.forcesBuffer } },
         { binding: 4, resource: { buffer: this.densityPressureBuffer } },
         { binding: 5, resource: { buffer: this.xsphBuffer } },
+        { binding: 6, resource: { buffer: this.sprayBuffer } },
+        { binding: 7, resource: { buffer: this.sprayCounterBuffer } },
       ],
     });
 
@@ -313,7 +336,8 @@ export class GPUCompute {
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
       { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
     ]);
     this.splatDensityPipeline = splatDensityResult.pipeline;
     this.splatDensityBindGroup = device.createBindGroup({
@@ -322,7 +346,23 @@ export class GPUCompute {
         { binding: 0, resource: { buffer: this.paramsBuffer } },
         { binding: 1, resource: { buffer: this.positionsBuffer } },
         { binding: 2, resource: { buffer: this.xsphBuffer } },
-        { binding: 3, resource: { buffer: this.densityFieldBuffer } },
+        { binding: 3, resource: { buffer: this.velocitiesBuffer } },
+        { binding: 4, resource: { buffer: this.densityFieldBuffer } },
+      ],
+    });
+
+    const advectSprayResult = this.createPipeline(device, advectSprayShader, [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+    ]);
+    this.advectSprayPipeline = advectSprayResult.pipeline;
+    this.advectSprayBindGroup = device.createBindGroup({
+      layout: advectSprayResult.bindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.sprayParamsBuffer } },
+        { binding: 1, resource: { buffer: this.sprayBuffer } },
+        { binding: 2, resource: { buffer: this.densityFieldBuffer } },
       ],
     });
 
@@ -361,12 +401,31 @@ export class GPUCompute {
   getDevice(): GPUDevice { return this.device; }
   getDensityFieldBuffer(): GPUBuffer { return this.densityFieldBuffer; }
   getParamsBuffer(): GPUBuffer { return this.paramsBuffer; }
+  getSprayBuffer(): GPUBuffer { return this.sprayBuffer; }
   getFieldResolution(): number { return this.fieldResolution; }
 
   encodeStep(encoder: GPUCommandEncoder, substeps: number, profiler?: GPUProfiler | null) {
     const fixedDt = 0.008;
     this.paramsF32[17] = fixedDt;
     this.device.queue.writeBuffer(this.paramsBuffer, 0, this.paramsArrayBuffer);
+
+    const sprayParamsData = new Float32Array(12);
+    const sprayParamsU32 = new Uint32Array(sprayParamsData.buffer);
+    sprayParamsData[0] = fixedDt * substeps;     // dt
+    sprayParamsData[1] = -15.0;                  // gravity
+    sprayParamsU32[2] = SPRAY_MAX;               // maxCount
+    sprayParamsU32[3] = this.fieldResolution;    // fieldResolution
+    sprayParamsData[4] = this.paramsF32[25];     // fieldDomainMinX
+    sprayParamsData[5] = this.paramsF32[26];     // fieldDomainMinY
+    sprayParamsData[6] = this.paramsF32[27];     // fieldDomainMinZ
+    sprayParamsData[7] = this.paramsF32[29];     // fieldInvCellSize
+    sprayParamsData[8] = 0.65;                   // threshold (density)
+    sprayParamsData[9] = this.paramsF32[22];     // halfContainerX
+    sprayParamsData[10] = this.paramsF32[23];    // halfContainerZ
+    sprayParamsData[11] = this.paramsF32[24];    // containerMaxY
+    this.device.queue.writeBuffer(this.sprayParamsBuffer, 0, sprayParamsData);
+
+    encoder.clearBuffer(this.sprayCounterBuffer, 0, 4);
 
     this.dispatch(encoder, this.clearGridPipeline, this.clearGridBindGroup,
       Math.ceil(this.tableSize / 256), profiler?.timestampWrites('clearGrid'));
@@ -394,6 +453,9 @@ export class GPUCompute {
       Math.ceil(fieldElements / 256), profiler?.timestampWrites('clearDensityField'));
     this.dispatch(encoder, this.splatDensityPipeline, this.splatDensityBindGroup,
       Math.ceil(this.particleCount / 256), profiler?.timestampWrites('splatDensity'));
+
+    this.dispatch(encoder, this.advectSprayPipeline, this.advectSprayBindGroup,
+      Math.ceil(SPRAY_MAX / 256), profiler?.timestampWrites('advectSpray'));
   }
 
   async step(dt: number, substeps: number) {
@@ -464,6 +526,9 @@ export class GPUCompute {
     this.cellEntriesBuffer.destroy();
     this.densityFieldBuffer.destroy();
     this.paramsBuffer.destroy();
+    this.sprayBuffer.destroy();
+    this.sprayCounterBuffer.destroy();
+    this.sprayParamsBuffer.destroy();
     this.stagingBuffers[0].destroy();
     this.stagingBuffers[1].destroy();
     if (destroyDevice) this.device.destroy();
