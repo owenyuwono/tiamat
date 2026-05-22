@@ -18,6 +18,7 @@ export interface SimConfig {
   paused: boolean;
   substepLimit: number;
   lightEnabled: boolean;
+  fxaaEnabled: boolean;
 }
 
 export const DEFAULT_PARTICLE_COUNT = 100000;
@@ -39,5 +40,6 @@ export function createDefaultConfig(): SimConfig {
     paused: false,
     substepLimit: 3,
     lightEnabled: true,
+    fxaaEnabled: true,
   };
 }

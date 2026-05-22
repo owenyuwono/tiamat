@@ -52,7 +52,7 @@ struct ObstacleData {
 @group(0) @binding(3) var<storage, read> densityPressure: array<vec2<f32>>;
 @group(0) @binding(4) var<storage, read_write> obstacleForces: array<atomic<i32>>;
 
-const FORCE_SCALE: f32 = 1000.0;
+const FORCE_SCALE: f32 = 10.0;
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -78,13 +78,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dist = length(diff);
     let surfaceDist = dist - obsRadius;
 
-    if (surfaceDist >= params.H || dist < 1e-6) {
+    if (surfaceDist >= params.H || surfaceDist < 0.0 || dist < 1e-6) {
       continue;
     }
 
-    // Mirror particle reflected across obstacle surface
     let normal = diff / dist;
-    let mirrorDist = abs(surfaceDist);
+    let mirrorDist = surfaceDist;
     if (mirrorDist >= params.H) {
       continue;
     }

@@ -156,17 +156,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dist = length(diff);
     let surfaceDist = dist - obsRadius;
 
-    if (surfaceDist >= params.H || dist < 1e-6) {
+    if (surfaceDist >= params.H || surfaceDist < 0.0 || dist < 1e-6) {
       continue;
     }
 
     let normal = diff / dist;
-    let mirrorDist = abs(surfaceDist);
-    if (mirrorDist >= params.H) {
-      continue;
-    }
 
-    let hr = params.H - mirrorDist;
+    let hr = params.H - surfaceDist;
 
     // Pressure force from mirror particle at obstacle surface
     let mirrorPressure = pressureI;

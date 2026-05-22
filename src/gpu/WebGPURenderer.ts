@@ -4,6 +4,8 @@ import bufferToTextureShader from './shaders/bufferToTexture.wgsl?raw';
 import waterRaymarchShader from './shaders/waterRaymarch.wgsl?raw';
 import floorShader from './shaders/floor.wgsl?raw';
 import sprayRenderShader from './shaders/sprayRender.wgsl?raw';
+import fxaaShader from './shaders/fxaa.wgsl?raw';
+import causticsShader from './shaders/caustics.wgsl?raw';
 import { generateWorleyNoise } from './generateWorleyNoise';
 
 export class WebGPURenderer {
@@ -52,6 +54,23 @@ export class WebGPURenderer {
   private depthTexture: GPUTexture;
   private width = 0;
   private height = 0;
+
+  private causticsTexture: GPUTexture;
+  private causticsTextureView: GPUTextureView;
+  private causticsPipeline: GPUComputePipeline;
+  private causticsBindGroupLayout: GPUBindGroupLayout;
+  private causticsBindGroup: GPUBindGroup;
+  private causticsUniformBuffer: GPUBuffer;
+  private causticsUniformData: Float32Array;
+
+  private fxaaEnabled = true;
+  private fxaaColorTexture: GPUTexture;
+  private fxaaColorTextureView: GPUTextureView;
+  private fxaaPipeline: GPURenderPipeline;
+  private fxaaBindGroupLayout: GPUBindGroupLayout;
+  private fxaaBindGroup: GPUBindGroup;
+  private fxaaUniformBuffer: GPUBuffer;
+  private fxaaUniformData: Float32Array;
 
   private _invVP = new THREE.Matrix4();
   private _vp = new THREE.Matrix4();
@@ -232,13 +251,18 @@ export class WebGPURenderer {
 
     // Floor pipeline
     const floorModule = device.createShaderModule({ code: floorShader });
-    this.floorUniformData = new Float32Array(20);
+    this.floorUniformData = new Float32Array(24);
     this.floorUniformData[16] = ld.x;
     this.floorUniformData[17] = ld.y;
     this.floorUniformData[18] = ld.z;
+    // [19] = time (written per frame)
+    this.floorUniformData[20] = domainMin.x;
+    this.floorUniformData[21] = domainMin.z;
+    this.floorUniformData[22] = domainMax.x - domainMin.x;
+    this.floorUniformData[23] = domainMax.z - domainMin.z;
 
     this.floorUniformBuffer = device.createBuffer({
-      size: 80,
+      size: 96,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -247,6 +271,9 @@ export class WebGPURenderer {
         { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
       ],
     });
     this.floorPipeline = device.createRenderPipeline({
@@ -270,14 +297,52 @@ export class WebGPURenderer {
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
     });
-    this.floorBindGroup = device.createBindGroup({
-      layout: this.floorBindGroupLayout,
+    // Caustics compute pipeline + texture
+    this.causticsTexture = device.createTexture({
+      size: [256, 256],
+      format: 'r32float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.causticsTextureView = this.causticsTexture.createView();
+    this.causticsUniformData = new Float32Array(8);
+    this.causticsUniformData[0] = domainMin.x;
+    this.causticsUniformData[1] = domainMin.y;
+    this.causticsUniformData[2] = domainMin.z;
+    this.causticsUniformData[3] = 0.3; // threshold
+    this.causticsUniformData[4] = domainMax.x;
+    this.causticsUniformData[5] = domainMax.y;
+    this.causticsUniformData[6] = domainMax.z;
+    this.causticsUniformData[7] = 25.0; // strength
+    this.causticsUniformBuffer = device.createBuffer({
+      size: 32,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(this.causticsUniformBuffer, 0, this.causticsUniformData);
+
+    this.causticsBindGroupLayout = device.createBindGroupLayout({
       entries: [
-        { binding: 0, resource: { buffer: this.floorUniformBuffer } },
-        { binding: 1, resource: this.sandTextureView },
-        { binding: 2, resource: this.repeatSampler },
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float', viewDimension: '3d' } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'r32float', viewDimension: '2d' } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
       ],
     });
+    const causticsModule = device.createShaderModule({ code: causticsShader });
+    this.causticsPipeline = device.createComputePipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.causticsBindGroupLayout] }),
+      compute: { module: causticsModule, entryPoint: 'main' },
+    });
+    this.causticsBindGroup = device.createBindGroup({
+      layout: this.causticsBindGroupLayout,
+      entries: [
+        { binding: 0, resource: this.densityTextureView },
+        { binding: 1, resource: this.linearSampler },
+        { binding: 2, resource: this.causticsTextureView },
+        { binding: 3, resource: { buffer: this.causticsUniformBuffer } },
+      ],
+    });
+
+    this.floorBindGroup = this.createFloorBindGroup();
 
     // Floor geometry — matches container footprint
     const fhx = containerSize.x / 2, fhz = containerSize.z / 2, fd = 0.12;
@@ -304,6 +369,63 @@ export class WebGPURenderer {
       format: 'depth24plus',
       usage: GPUTextureUsage.RENDER_ATTACHMENT,
     });
+
+    // FXAA post-process
+    this.fxaaUniformData = new Float32Array(4);
+    this.fxaaUniformBuffer = device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.fxaaBindGroupLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ],
+    });
+    const fxaaModule = device.createShaderModule({ code: fxaaShader });
+    this.fxaaPipeline = device.createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.fxaaBindGroupLayout] }),
+      vertex: { module: fxaaModule, entryPoint: 'vs_main' },
+      fragment: {
+        module: fxaaModule,
+        entryPoint: 'fs_main',
+        targets: [{ format: this.format }],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+    this.fxaaColorTexture = device.createTexture({
+      size: [1, 1],
+      format: this.format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.fxaaColorTextureView = this.fxaaColorTexture.createView();
+    this.fxaaBindGroup = this.createFxaaBindGroup();
+  }
+
+  private createFloorBindGroup(): GPUBindGroup {
+    return this.device.createBindGroup({
+      layout: this.floorBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.floorUniformBuffer } },
+        { binding: 1, resource: this.sandTextureView },
+        { binding: 2, resource: this.repeatSampler },
+        { binding: 3, resource: this.causticsTextureView },
+        { binding: 4, resource: this.linearSampler },
+        { binding: 5, resource: this.foamNoiseTextureView },
+      ],
+    });
+  }
+
+  private createFxaaBindGroup(): GPUBindGroup {
+    return this.device.createBindGroup({
+      layout: this.fxaaBindGroupLayout,
+      entries: [
+        { binding: 0, resource: this.fxaaColorTextureView },
+        { binding: 1, resource: this.linearSampler },
+        { binding: 2, resource: { buffer: this.fxaaUniformBuffer } },
+      ],
+    });
   }
 
   resize(width: number, height: number, pixelRatio: number, renderScale = 1.0) {
@@ -322,9 +444,21 @@ export class WebGPURenderer {
       format: 'depth24plus',
       usage: GPUTextureUsage.RENDER_ATTACHMENT,
     });
+
+    this.fxaaColorTexture.destroy();
+    this.fxaaColorTexture = this.device.createTexture({
+      size: [w, h],
+      format: this.format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.fxaaColorTextureView = this.fxaaColorTexture.createView();
+    this.fxaaUniformData[0] = 1.0 / w;
+    this.fxaaUniformData[1] = 1.0 / h;
+    this.device.queue.writeBuffer(this.fxaaUniformBuffer, 0, this.fxaaUniformData);
+    this.fxaaBindGroup = this.createFxaaBindGroup();
   }
 
-  encodeFrame(encoder: GPUCommandEncoder, camera: THREE.PerspectiveCamera, profiler?: GPUProfiler | null) {
+  encodeFrame(encoder: GPUCommandEncoder, camera: THREE.PerspectiveCamera, profiler?: GPUProfiler | null, time = 0) {
     // Buffer-to-texture compute pass
     const res = this.fieldResolution;
     const wg = Math.ceil(res / 4);
@@ -336,6 +470,18 @@ export class WebGPURenderer {
     b2tPass.setBindGroup(0, this.bufferToTexBindGroup);
     b2tPass.dispatchWorkgroups(wg, wg, wg);
     b2tPass.end();
+
+    // Caustics compute pass
+    const causticsDesc: GPUComputePassDescriptor = {};
+    const causticsTs = profiler?.timestampWrites('causticsPass');
+    if (causticsTs) causticsDesc.timestampWrites = causticsTs;
+    this.causticsUniformData[3] = this.renderUniformData[19]; // sync threshold
+    this.device.queue.writeBuffer(this.causticsUniformBuffer, 0, this.causticsUniformData);
+    const causticsPass = encoder.beginComputePass(causticsDesc);
+    causticsPass.setPipeline(this.causticsPipeline);
+    causticsPass.setBindGroup(0, this.causticsBindGroup);
+    causticsPass.dispatchWorkgroups(32, 32); // 256/8 = 32
+    causticsPass.end();
 
     // Update render uniforms
     this._invVP.copy(camera.projectionMatrix).multiply(camera.matrixWorldInverse).invert();
@@ -352,16 +498,18 @@ export class WebGPURenderer {
 
     this.device.queue.writeBuffer(this.renderUniformBuffer, 0, this.renderUniformData);
 
-    // Update floor uniforms (viewProjection matrix)
+    // Update floor uniforms (viewProjection matrix + time)
     this._vp.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     const vpE = this._vp.elements;
     for (let i = 0; i < 16; i++) {
       this.floorUniformData[i] = vpE[i];
     }
+    this.floorUniformData[19] = time;
     this.device.queue.writeBuffer(this.floorUniformBuffer, 0, this.floorUniformData);
 
     // Render pass
-    const colorView = this.context.getCurrentTexture().createView();
+    const canvasView = this.context.getCurrentTexture().createView();
+    const colorView = this.fxaaEnabled ? this.fxaaColorTextureView : canvasView;
     const depthView = this.depthTexture.createView();
 
     const renderPassDesc: GPURenderPassDescriptor = {
@@ -393,7 +541,28 @@ export class WebGPURenderer {
     pass.setBindGroup(0, this.waterBindGroup);
     pass.draw(3);
 
-    // Draw spray particles
+    pass.end();
+
+    if (this.fxaaEnabled) {
+      const fxaaPassDesc: GPURenderPassDescriptor = {
+        colorAttachments: [{
+          view: canvasView,
+          loadOp: 'clear' as const,
+          storeOp: 'store' as const,
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        }],
+      };
+      const fxaaTs = profiler?.timestampWrites('fxaaPass');
+      if (fxaaTs) fxaaPassDesc.timestampWrites = fxaaTs;
+      const fxaaPass = encoder.beginRenderPass(fxaaPassDesc);
+      fxaaPass.setPipeline(this.fxaaPipeline);
+      fxaaPass.setBindGroup(0, this.fxaaBindGroup);
+      fxaaPass.draw(3);
+      fxaaPass.end();
+    }
+
+    // Draw spray AFTER FXAA — small additive particles get eaten by FXAA's
+    // edge detection, so they render directly to the canvas with scene depth
     if (this.sprayRenderPipeline && this.sprayRenderBindGroup) {
       const vpE2 = this._vp.elements;
       for (let i = 0; i < 16; i++) {
@@ -409,12 +578,28 @@ export class WebGPURenderer {
       this.sprayRenderUniformData[22] = this._camUp.z;
       this.device.queue.writeBuffer(this.sprayRenderUniformBuffer, 0, this.sprayRenderUniformData);
 
-      pass.setPipeline(this.sprayRenderPipeline);
-      pass.setBindGroup(0, this.sprayRenderBindGroup);
-      pass.draw(4, 32768);
+      const sprayPassDesc: GPURenderPassDescriptor = {
+        colorAttachments: [{
+          view: canvasView,
+          loadOp: 'load' as const,
+          storeOp: 'store' as const,
+        }],
+        depthStencilAttachment: {
+          view: depthView,
+          depthLoadOp: 'load',
+          depthStoreOp: 'store',
+        },
+      };
+      const sprayPass = encoder.beginRenderPass(sprayPassDesc);
+      sprayPass.setPipeline(this.sprayRenderPipeline);
+      sprayPass.setBindGroup(0, this.sprayRenderBindGroup);
+      sprayPass.draw(4, 32768);
+      sprayPass.end();
     }
+  }
 
-    pass.end();
+  setFxaaEnabled(enabled: boolean) {
+    this.fxaaEnabled = enabled;
   }
 
   setThreshold(value: number) {
@@ -477,15 +662,7 @@ export class WebGPURenderer {
       [bitmap.width, bitmap.height],
     );
 
-    this.floorBindGroup = this.device.createBindGroup({
-      layout: this.floorBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.floorUniformBuffer } },
-        { binding: 1, resource: this.sandTextureView },
-        { binding: 2, resource: this.repeatSampler },
-      ],
-    });
-
+    this.floorBindGroup = this.createFloorBindGroup();
     this.waterBindGroup = this.createWaterBindGroup();
   }
 
@@ -556,5 +733,9 @@ export class WebGPURenderer {
     this.sprayRenderUniformBuffer.destroy();
     this.floorUniformBuffer.destroy();
     this.floorVertexBuffer.destroy();
+    this.causticsTexture.destroy();
+    this.causticsUniformBuffer.destroy();
+    this.fxaaColorTexture.destroy();
+    this.fxaaUniformBuffer.destroy();
   }
 }

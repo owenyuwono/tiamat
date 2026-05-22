@@ -127,22 +127,60 @@ async function init() {
 
   if (webgpuRenderer) {
     const canvas = webgpuRenderer.canvas;
+    let isDragging = false;
     let pointerDownPos: { x: number; y: number } | null = null;
+
+    function ndcFromEvent(e: PointerEvent) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        y: -((e.clientY - rect.top) / rect.height) * 2 + 1,
+      };
+    }
 
     canvas.addEventListener('pointerdown', (e) => {
       pointerDownPos = { x: e.clientX, y: e.clientY };
+      camera.updateMatrixWorld();
+      const ndc = ndcFromEvent(e);
+      const { origin, direction } = rigidBodies.getRayFromNDC(ndc.x, ndc.y, camera);
+
+      if (rigidBodies.hasBody() && rigidBodies.hitTest(origin, direction)) {
+        isDragging = true;
+        controls.enabled = false;
+        rigidBodies.startDrag();
+        canvas.setPointerCapture(e.pointerId);
+      }
     });
+
+    canvas.addEventListener('pointermove', (e) => {
+      if (!isDragging) return;
+      camera.updateMatrixWorld();
+      const ndc = ndcFromEvent(e);
+      const { origin, direction } = rigidBodies.getRayFromNDC(ndc.x, ndc.y, camera);
+      const now = performance.now();
+      const dt = Math.max((now - lastTime) / 1000, 1 / 120);
+      rigidBodies.updateDrag(origin, direction, dt);
+    });
+
     canvas.addEventListener('pointerup', (e) => {
+      if (isDragging) {
+        isDragging = false;
+        controls.enabled = true;
+        rigidBodies.endDrag();
+        canvas.releasePointerCapture(e.pointerId);
+        pointerDownPos = null;
+        return;
+      }
+
       if (!pointerDownPos) return;
       const dx = e.clientX - pointerDownPos.x;
       const dy = e.clientY - pointerDownPos.y;
       pointerDownPos = null;
-      if (dx * dx + dy * dy > 25) return; // drag threshold — ignore orbit gestures
+      if (dx * dx + dy * dy > 25) return;
 
-      const rect = canvas.getBoundingClientRect();
-      const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      const ndcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-      rigidBodies.raycastSpawn(ndcX, ndcY, camera, 0.3, 500);
+      camera.updateMatrixWorld();
+      const ndc = ndcFromEvent(e);
+      rigidBodies.raycastSpawn(ndc.x, ndc.y, camera, 0.3);
     });
   }
 
@@ -241,12 +279,14 @@ async function init() {
   const lightRef = new THREE.DirectionalLight(0xffffff, 1.0);
   lightRef.position.set(5, 8, 5);
   let lastTime = performance.now();
+  let elapsedTime = 0;
 
   async function animate() {
     const now = performance.now();
     const dtMs = Math.min(now - lastTime, 16);
     const dt = dtMs / 1000;
     lastTime = now;
+    elapsedTime += dt;
 
     const fixedDt = 0.008;
     const substeps = config.paused ? 0 : Math.min(Math.ceil(dt / fixedDt), config.substepLimit);
@@ -256,6 +296,7 @@ async function init() {
 
     if (activeCompute && webgpuRenderer) {
       webgpuRenderer.setLightEnabled(config.lightEnabled);
+      webgpuRenderer.setFxaaEnabled(config.fxaaEnabled);
       activeCompute.updateSimConfig(config);
       webgpuRenderer.setThreshold(config.threshold);
 
@@ -271,15 +312,14 @@ async function init() {
       if (!config.paused) {
         activeCompute.encodeStep(encoder, substeps, profiler);
       }
-      webgpuRenderer.encodeFrame(encoder, camera, profiler);
+      webgpuRenderer.encodeFrame(encoder, camera, profiler, elapsedTime);
       profiler?.resolve(encoder);
       device.queue.submit([encoder.finish()]);
       device.popErrorScope().then(err => { if (err) console.error('Frame validation error:', err.message); });
       await device.queue.onSubmittedWorkDone();
 
-      if (gpuCompute && !config.paused && substeps > 0 && rigidBodies.getActiveCount() > 0) {
-        const forces = await gpuCompute.readObstacleForces();
-        rigidBodies.integrateFromForces(forces, substeps, fixedDt);
+      if (!config.paused) {
+        rigidBodies.integrate(substeps, fixedDt);
       }
 
       await profiler?.readback();

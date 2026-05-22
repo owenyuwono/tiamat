@@ -114,9 +114,18 @@ export class ControlPanel {
       lightBtn.textContent = this.config.lightEnabled ? 'Light: On' : 'Light: Off';
     });
 
+    const fxaaBtn = document.createElement('button');
+    fxaaBtn.className = 'panel-btn';
+    fxaaBtn.textContent = 'FXAA: On';
+    fxaaBtn.addEventListener('click', () => {
+      this.config.fxaaEnabled = !this.config.fxaaEnabled;
+      fxaaBtn.textContent = this.config.fxaaEnabled ? 'FXAA: On' : 'FXAA: Off';
+    });
+
     btnRow.appendChild(this.pauseBtn);
     btnRow.appendChild(resetBtn);
     btnRow.appendChild(lightBtn);
+    btnRow.appendChild(fxaaBtn);
 
     const hint = document.createElement('div');
     hint.style.cssText = 'font-size:10px;color:oklch(50% 0.01 260);text-align:center;margin-top:6px;';
