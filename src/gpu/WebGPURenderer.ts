@@ -352,6 +352,7 @@ export class WebGPURenderer {
   }
 
   dispose() {
+    this.canvas.remove();
     this.densityTexture.destroy();
     this.depthTexture.destroy();
     this.renderUniformBuffer.destroy();

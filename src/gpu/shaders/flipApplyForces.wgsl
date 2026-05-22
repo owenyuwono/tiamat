@@ -36,60 +36,44 @@ struct Params {
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read_write> positions: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> velocities: array<vec4<f32>>;
-@group(0) @binding(3) var<storage, read> forces: array<vec4<f32>>;
-@group(0) @binding(4) var<storage, read> densityPressure: array<vec2<f32>>;
-@group(0) @binding(5) var<storage, read> xsph: array<vec4<f32>>;
 
+// Step 1 (Müller FLIP): apply gravity, advect, enforce particle-wall collisions.
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid: vec3u) {
   let i = gid.x;
-  if (i >= params.particleCount) {
-    return;
-  }
+  if (i >= params.particleCount) { return; }
 
-  let density = max(densityPressure[i].x, 10.0);
-  let invRho = 1.0 / density;
-
-  var vel = velocities[i].xyz;
   var pos = positions[i].xyz;
+  var vel = velocities[i].xyz;
 
-  vel += forces[i].xyz * invRho * params.dt;
-  vel += params.xsphEpsilon * xsph[i].xyz;
-
-  vel *= 1.0 - 0.5 * params.dt;
-
-  let speed2 = dot(vel, vel);
-  if (speed2 > params.maxVelocity * params.maxVelocity) {
-    vel *= params.maxVelocity / sqrt(speed2);
-  }
-
+  vel.y += params.gravity * params.dt;
   pos += vel * params.dt;
 
   if (pos.x < -params.halfContainerX) {
     pos.x = -params.halfContainerX;
-    vel.x *= params.boundaryDamping;
+    vel.x = max(vel.x, 0.0);
   }
   if (pos.x > params.halfContainerX) {
     pos.x = params.halfContainerX;
-    vel.x *= params.boundaryDamping;
+    vel.x = min(vel.x, 0.0);
   }
   if (pos.y < 0.0) {
     pos.y = 0.0;
-    vel.y *= params.boundaryDamping;
+    vel.y = max(vel.y, 0.0);
   }
   if (pos.y > params.containerMaxY) {
     pos.y = params.containerMaxY;
-    vel.y *= params.boundaryDamping;
+    vel.y = min(vel.y, 0.0);
   }
   if (pos.z < -params.halfContainerZ) {
     pos.z = -params.halfContainerZ;
-    vel.z *= params.boundaryDamping;
+    vel.z = max(vel.z, 0.0);
   }
   if (pos.z > params.halfContainerZ) {
     pos.z = params.halfContainerZ;
-    vel.z *= params.boundaryDamping;
+    vel.z = min(vel.z, 0.0);
   }
 
-  positions[i] = vec4<f32>(pos, positions[i].w);
-  velocities[i] = vec4<f32>(vel, velocities[i].w);
+  positions[i] = vec4f(pos, positions[i].w);
+  velocities[i] = vec4f(vel, velocities[i].w);
 }

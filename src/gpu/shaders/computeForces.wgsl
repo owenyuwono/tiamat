@@ -120,8 +120,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
   }
 
-  let wallDist = params.collisionRadius * 2.0;
-  let wallK = params.collisionStiffness * 2.0;
+  let wallDist = params.collisionRadius;
+  let wallK = params.collisionStiffness * 0.5;
 
   let dLeft = posI.x - (-params.halfContainerX);
   let dRight = params.halfContainerX - posI.x;

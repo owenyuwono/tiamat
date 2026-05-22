@@ -1,6 +1,9 @@
 import { SPH } from '../sph/constants';
 
+export type Algorithm = 'sph' | 'flip';
+
 export interface SimConfig {
+  algorithm: Algorithm;
   particleCount: number;
   stiffness: number;
   viscosity: number;
@@ -20,6 +23,7 @@ export const DEFAULT_PARTICLE_COUNT = 100000;
 
 export function createDefaultConfig(): SimConfig {
   return {
+    algorithm: 'sph',
     particleCount: DEFAULT_PARTICLE_COUNT,
     stiffness: SPH.stiffness,
     viscosity: SPH.viscosity,
@@ -28,10 +32,10 @@ export function createDefaultConfig(): SimConfig {
     maxVelocity: SPH.maxVelocity,
     xsphEpsilon: SPH.xsphEpsilon,
     surfaceTension: SPH.surfaceTension,
-    splatRadius: 0.1,
+    splatRadius: 0.15,
     threshold: 0.75,
     renderScale: 0.5,
     paused: false,
-    substepLimit: 3,
+    substepLimit: 6,
   };
 }

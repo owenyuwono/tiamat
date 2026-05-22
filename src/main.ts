@@ -5,13 +5,24 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { SPHSimulation } from './sph/simulation';
 import { WaterRenderer } from './rendering/WaterRenderer';
 import { GPUCompute } from './gpu/GPUCompute';
+import { FLIPCompute } from './gpu/FLIPCompute';
 import { GPUProfiler } from './gpu/GPUProfiler';
 import { WebGPURenderer } from './gpu/WebGPURenderer';
 import { createDefaultConfig } from './ui/SimConfig';
+import type { Algorithm } from './ui/SimConfig';
 import { ControlPanel } from './ui/ControlPanel';
 import { StatsPanel } from './ui/StatsPanel';
 
-const CONTAINER_SIZE = new THREE.Vector3(4, 4, 4);
+function computeContainerSize(particleCount: number): THREE.Vector3 {
+  const spacing = 0.05;
+  const blockWidth = (Math.ceil(Math.cbrt(particleCount)) - 1) * spacing;
+  const side = Math.max(4, Math.ceil(blockWidth * 1.65));
+  return new THREE.Vector3(side, side, side);
+}
+
+function computeFieldResolution(containerSide: number): number {
+  return Math.min(128, Math.round(containerSide / 0.05));
+}
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xd0d8e8);
@@ -21,11 +32,15 @@ camera.position.set(6, 4.5, 6);
 camera.lookAt(0, 2, 0);
 
 async function init() {
-  const domainMin = new THREE.Vector3(-CONTAINER_SIZE.x / 2, 0, -CONTAINER_SIZE.z / 2);
-  const domainMax = new THREE.Vector3(CONTAINER_SIZE.x / 2, CONTAINER_SIZE.y, CONTAINER_SIZE.z / 2);
   const config = createDefaultConfig();
+  let containerSize = computeContainerSize(config.particleCount);
+  let fieldResolution = computeFieldResolution(containerSize.x);
+  let domainMin = new THREE.Vector3(-containerSize.x / 2, 0, -containerSize.z / 2);
+  let domainMax = new THREE.Vector3(containerSize.x / 2, containerSize.y, containerSize.z / 2);
 
   let gpuCompute: GPUCompute | null = null;
+  let flipCompute: FLIPCompute | null = null;
+  let activeCompute: GPUCompute | FLIPCompute | null = null;
   let glRenderer: THREE.WebGLRenderer | null = null;
   let webgpuRenderer: WebGPURenderer | null = null;
   let waterRenderer: WaterRenderer | null = null;
@@ -37,7 +52,7 @@ async function init() {
   let savedPosZ = new Float32Array(0);
 
   function generatePositions(count: number) {
-    const sim = new SPHSimulation(scene, count, CONTAINER_SIZE);
+    const sim = new SPHSimulation(scene, count, containerSize);
     sim.setInstancedRendering(false);
     const p = sim.getParticlePositions();
     savedPosX = new Float32Array(p.posX);
@@ -49,21 +64,26 @@ async function init() {
   let sim = generatePositions(config.particleCount);
 
   gpuCompute = await GPUCompute.create(
-    config.particleCount, CONTAINER_SIZE, 80, domainMin, domainMax, 0.1
+    config.particleCount, containerSize, fieldResolution, domainMin, domainMax, config.splatRadius
   );
 
   if (gpuCompute) {
+    const device = gpuCompute.getDevice();
+    flipCompute = new FLIPCompute(
+      device, config.particleCount, containerSize, fieldResolution, domainMin, domainMax, config.splatRadius,
+    );
+    activeCompute = gpuCompute;
+
     webgpuRenderer = new WebGPURenderer(
-      gpuCompute.getDevice(),
+      device,
       gpuCompute.getDensityFieldBuffer(),
       gpuCompute.getParamsBuffer(),
       gpuCompute.getFieldResolution(),
-      domainMin, domainMax, CONTAINER_SIZE,
+      domainMin, domainMax, containerSize,
     );
     webgpuRenderer.resize(window.innerWidth, window.innerHeight, Math.min(window.devicePixelRatio, 2), config.renderScale);
     controls = new OrbitControls(camera, webgpuRenderer.canvas);
 
-    const device = gpuCompute.getDevice();
     if (device.features.has('timestamp-query')) {
       profiler = new GPUProfiler(device);
       profiler.setParticleCount(config.particleCount);
@@ -83,14 +103,14 @@ async function init() {
     dirLight.position.set(5, 8, 5);
     scene.add(dirLight);
 
-    const boxGeo = new THREE.BoxGeometry(CONTAINER_SIZE.x, CONTAINER_SIZE.y, CONTAINER_SIZE.z);
+    const boxGeo = new THREE.BoxGeometry(containerSize.x, containerSize.y, containerSize.z);
     const edges = new THREE.EdgesGeometry(boxGeo);
     const wireframe = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x8090a0 }));
-    wireframe.position.set(0, CONTAINER_SIZE.y / 2, 0);
+    wireframe.position.set(0, containerSize.y / 2, 0);
     scene.add(wireframe);
 
     waterRenderer = new WaterRenderer(scene, domainMin, domainMax, {
-      resolution: 80, splatRadius: 0.1, threshold: 0.75,
+      resolution: fieldResolution, splatRadius: config.splatRadius, threshold: config.threshold,
     });
 
     console.log('WebGPU unavailable, using CPU SPH fallback');
@@ -99,21 +119,55 @@ async function init() {
   controls.enableDamping = true;
   controls.target.set(0, 2, 0);
 
+  function switchAlgorithm(algo: Algorithm) {
+    if (!gpuCompute || !flipCompute || !webgpuRenderer) return;
+    activeCompute = algo === 'sph' ? gpuCompute : flipCompute;
+    activeCompute.uploadInitialPositions(savedPosX, savedPosY, savedPosZ);
+    activeCompute.resetVelocities();
+    webgpuRenderer.rebindComputeBuffers(
+      activeCompute.getDensityFieldBuffer(),
+      activeCompute.getParamsBuffer(),
+    );
+  }
+
   async function reinitGPU(count: number) {
     if (!gpuCompute || !webgpuRenderer) return;
     const device = gpuCompute.getDevice();
 
+    containerSize = computeContainerSize(count);
+    fieldResolution = computeFieldResolution(containerSize.x);
+    domainMin = new THREE.Vector3(-containerSize.x / 2, 0, -containerSize.z / 2);
+    domainMax = new THREE.Vector3(containerSize.x / 2, containerSize.y, containerSize.z / 2);
+
     gpuCompute.dispose();
+    if (flipCompute) flipCompute.dispose();
+
     gpuCompute = new GPUCompute(
-      device, count, CONTAINER_SIZE, 80, domainMin, domainMax, 0.1,
+      device, count, containerSize, fieldResolution, domainMin, domainMax, config.splatRadius,
     );
+    flipCompute = new FLIPCompute(
+      device, count, containerSize, fieldResolution, domainMin, domainMax, config.splatRadius,
+    );
+    activeCompute = config.algorithm === 'sph' ? gpuCompute : flipCompute;
 
     sim = generatePositions(count);
-    gpuCompute.uploadInitialPositions(savedPosX, savedPosY, savedPosZ);
-    webgpuRenderer.rebindComputeBuffers(
-      gpuCompute.getDensityFieldBuffer(),
-      gpuCompute.getParamsBuffer(),
+    activeCompute.uploadInitialPositions(savedPosX, savedPosY, savedPosZ);
+
+    webgpuRenderer.dispose();
+    webgpuRenderer = new WebGPURenderer(
+      device,
+      activeCompute.getDensityFieldBuffer(),
+      activeCompute.getParamsBuffer(),
+      activeCompute.getFieldResolution(),
+      domainMin, domainMax, containerSize,
     );
+    webgpuRenderer.resize(window.innerWidth, window.innerHeight, Math.min(window.devicePixelRatio, 2), config.renderScale);
+    webgpuRenderer.setThreshold(config.threshold);
+    controls.dispose();
+    controls = new OrbitControls(camera, webgpuRenderer.canvas);
+    controls.enableDamping = true;
+    controls.target.set(0, containerSize.y / 2, 0);
+
     profiler?.setParticleCount(count);
   }
 
@@ -123,9 +177,9 @@ async function init() {
   const _controlPanel = new ControlPanel(config, {
     gpuMode: isGPU,
     onReset: () => {
-      if (gpuCompute) {
-        gpuCompute.uploadInitialPositions(savedPosX, savedPosY, savedPosZ);
-        gpuCompute.resetVelocities();
+      if (activeCompute) {
+        activeCompute.uploadInitialPositions(savedPosX, savedPosY, savedPosZ);
+        activeCompute.resetVelocities();
       }
     },
     onRenderScaleChange: (scale: number) => {
@@ -135,6 +189,9 @@ async function init() {
     },
     onParticleCountChange: (count: number) => {
       reinitGPU(count);
+    },
+    onAlgorithmChange: (algo: Algorithm) => {
+      switchAlgorithm(algo);
     },
   });
 
@@ -166,16 +223,16 @@ async function init() {
     controls.update();
     camera.updateMatrixWorld();
 
-    if (gpuCompute && webgpuRenderer) {
-      gpuCompute.updateSimConfig(config);
+    if (activeCompute && webgpuRenderer) {
+      activeCompute.updateSimConfig(config);
       webgpuRenderer.setThreshold(config.threshold);
 
       profiler?.beginFrame();
       profiler?.setSubsteps(substeps);
-      const device = gpuCompute.getDevice();
+      const device = activeCompute.getDevice();
       const encoder = device.createCommandEncoder();
       if (!config.paused) {
-        gpuCompute.encodeStep(encoder, substeps, profiler);
+        activeCompute.encodeStep(encoder, substeps, profiler);
       }
       webgpuRenderer.encodeFrame(encoder, camera, profiler);
       profiler?.resolve(encoder);

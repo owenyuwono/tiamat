@@ -177,7 +177,7 @@ export class GPUCompute {
     this.paramsF32[14] = SPH.collisionStiffness;
     this.paramsF32[15] = SPH.xsphEpsilon;
     this.paramsF32[16] = SPH.surfaceTension;
-    this.paramsF32[17] = 0.008;
+    this.paramsF32[17] = 0.004;
     this.paramsF32[18] = 315 / (64 * Math.PI * Math.pow(H, 9));
     this.paramsF32[19] = -45 / (Math.PI * Math.pow(H, 6));
     this.paramsF32[20] = 45 / (Math.PI * Math.pow(H, 6));
@@ -358,7 +358,7 @@ export class GPUCompute {
   getFieldResolution(): number { return this.fieldResolution; }
 
   encodeStep(encoder: GPUCommandEncoder, substeps: number, profiler?: GPUProfiler | null) {
-    const fixedDt = 0.008;
+    const fixedDt = 0.004;
     this.paramsF32[17] = fixedDt;
     this.device.queue.writeBuffer(this.paramsBuffer, 0, this.paramsArrayBuffer);
 
