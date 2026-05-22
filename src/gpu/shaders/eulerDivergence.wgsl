@@ -51,12 +51,11 @@ fn idxW(ix: i32, iy: i32, iz: i32, res: i32) -> u32 {
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
-  let flatIdx = gid.x;
   let res = i32(params.fieldResolution);
   let total = u32(res * res * res);
-  if (flatIdx >= total) { return; }
+  if (gid.x >= total) { return; }
 
-  let ires = i32(flatIdx);
+  let ires = i32(gid.x);
   let iz = ires / (res * res);
   let iy = (ires / res) % res;
   let ix = ires % res;
@@ -67,5 +66,5 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let dv = vVel[idxV(ix, iy + 1, iz, res)] - vVel[idxV(ix, iy, iz, res)];
   let dw = wVel[idxW(ix, iy, iz + 1, res)] - wVel[idxW(ix, iy, iz, res)];
 
-  divergence[flatIdx] = (du + dv + dw) / h;
+  divergence[gid.x] = (du + dv + dw) / h;
 }

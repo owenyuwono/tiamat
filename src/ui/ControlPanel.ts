@@ -1,4 +1,5 @@
-import type { SimConfig, Algorithm } from './SimConfig';
+import type { SimConfig } from './SimConfig';
+import type { AlgorithmPicker } from './AlgorithmPicker';
 
 interface SliderDef {
   key: keyof SimConfig;
@@ -13,8 +14,8 @@ export interface ControlPanelCallbacks {
   onReset: () => void;
   onRenderScaleChange: (scale: number) => void;
   onParticleCountChange: (count: number) => void;
-  onAlgorithmChange: (algorithm: Algorithm) => void;
   gpuMode: boolean;
+  algorithmPicker?: AlgorithmPicker;
 }
 
 const PHYSICS_SLIDERS: SliderDef[] = [
@@ -47,8 +48,9 @@ export class ControlPanel {
     this.el = document.createElement('div');
     this.el.className = 'panel panel-controls';
 
-    if (callbacks.gpuMode) {
-      this.el.appendChild(this.buildAlgorithmToggle());
+    if (callbacks.algorithmPicker) {
+      this.el.appendChild(callbacks.algorithmPicker.el);
+      this.el.appendChild(this.buildSeparator());
     }
 
     const particleSlider: SliderDef = {
@@ -218,32 +220,6 @@ export class ControlPanel {
     const hr = document.createElement('hr');
     hr.className = 'panel-separator';
     return hr;
-  }
-
-  private buildAlgorithmToggle(): HTMLDivElement {
-    const wrapper = document.createElement('div');
-    wrapper.className = 'panel-algo-toggle';
-
-    const algorithms: { value: Algorithm; label: string }[] = [
-      { value: 'sph', label: 'SPH' },
-      { value: 'flip', label: 'FLIP' },
-    ];
-
-    for (const algo of algorithms) {
-      const btn = document.createElement('button');
-      btn.className = 'algo-btn' + (this.config.algorithm === algo.value ? ' active' : '');
-      btn.textContent = algo.label;
-      btn.addEventListener('click', () => {
-        if (this.config.algorithm === algo.value) return;
-        this.config.algorithm = algo.value;
-        wrapper.querySelectorAll('.algo-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        this.callbacks.onAlgorithmChange(algo.value);
-      });
-      wrapper.appendChild(btn);
-    }
-
-    return wrapper;
   }
 
   dispose() {

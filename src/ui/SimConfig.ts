@@ -1,6 +1,6 @@
 import { SPH } from '../sph/constants';
 
-export type Algorithm = 'sph' | 'flip';
+export type Algorithm = 'sph' | 'flip' | 'euler';
 
 export interface SimConfig {
   algorithm: Algorithm;
@@ -17,6 +17,8 @@ export interface SimConfig {
   renderScale: number;
   paused: boolean;
   substepLimit: number;
+  lightAzimuth: number;
+  lightElevation: number;
 }
 
 export const DEFAULT_PARTICLE_COUNT = 100000;
@@ -32,10 +34,12 @@ export function createDefaultConfig(): SimConfig {
     maxVelocity: SPH.maxVelocity,
     xsphEpsilon: SPH.xsphEpsilon,
     surfaceTension: SPH.surfaceTension,
-    splatRadius: 0.08,
+    splatRadius: 0.15,
     threshold: 0.55,
     renderScale: 0.5,
     paused: false,
     substepLimit: 6,
+    lightAzimuth: 45,
+    lightElevation: 50,
   };
 }

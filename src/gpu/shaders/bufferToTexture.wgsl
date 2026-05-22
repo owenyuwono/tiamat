@@ -39,6 +39,9 @@ struct Params {
 
 const INV_SCALE: f32 = 0.0001;
 
+// 3x3x3 box filter to remove grid-scale cellular artifacts from splatting while
+// preserving overall fluid shape. This is the source of the "cellular / puffy"
+// pattern the user sees on the settled pool (especially in the high-density middle).
 @compute @workgroup_size(4, 4, 4)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let res = params.fieldResolution;
@@ -46,9 +49,34 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     return;
   }
 
-  let idx = (gid.z * res * res + gid.y * res + gid.x) * 2u;
-  let density = f32(densityField[idx]) * INV_SCALE;
-  let impact = f32(densityField[idx + 1u]) * INV_SCALE;
+  let resI = i32(res);
+  let cx = i32(gid.x);
+  let cy = i32(gid.y);
+  let cz = i32(gid.z);
+
+  var sumD: f32 = 0.0;
+  var sumI: f32 = 0.0;
+  var count: f32 = 0.0;
+
+  for (var dz = -1; dz <= 1; dz++) {
+    let iz = cz + dz;
+    if (iz < 0 || iz >= resI) { continue; }
+    for (var dy = -1; dy <= 1; dy++) {
+      let iy = cy + dy;
+      if (iy < 0 || iy >= resI) { continue; }
+      for (var dx = -1; dx <= 1; dx++) {
+        let ix = cx + dx;
+        if (ix < 0 || ix >= resI) { continue; }
+        let nidx = u32((iz * resI * resI + iy * resI + ix) * 2);
+        sumD += f32(densityField[nidx]) * INV_SCALE;
+        sumI += f32(densityField[nidx + 1u]) * INV_SCALE;
+        count += 1.0;
+      }
+    }
+  }
+
+  let density = select(0.0, sumD / count, count > 0.0);
+  let impact = select(0.0, sumI / count, count > 0.0);
 
   textureStore(densityTexture, gid, vec4<f32>(density, impact, 0.0, 0.0));
 }

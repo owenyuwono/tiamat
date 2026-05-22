@@ -3,12 +3,13 @@ import { SPH } from '../sph/constants';
 import type { SimConfig } from '../ui/SimConfig';
 import type { GPUProfiler } from './GPUProfiler';
 
-import flipClearGridShader from './shaders/flipClearGrid.wgsl?raw';
 import flipP2GShader from './shaders/flipP2G.wgsl?raw';
-import flipNormalizeShader from './shaders/flipNormalize.wgsl?raw';
+import flipNormalizeAShader from './shaders/flipNormalizeA.wgsl?raw';
+import flipNormalizeBShader from './shaders/flipNormalizeB.wgsl?raw';
 import flipDivergenceShader from './shaders/flipDivergence.wgsl?raw';
 import flipJacobiShader from './shaders/flipJacobi.wgsl?raw';
 import flipProjectShader from './shaders/flipProject.wgsl?raw';
+import flipProjectStaggeredShader from './shaders/flipProjectStaggered.wgsl?raw';
 import flipG2PShader from './shaders/flipG2P.wgsl?raw';
 import clearDensityFieldShader from './shaders/clearDensityField.wgsl?raw';
 import flipSplatDensityShader from './shaders/flipSplatDensity.wgsl?raw';
@@ -31,26 +32,37 @@ export class FLIPCompute {
 
   private positionsBuffer: GPUBuffer;
   private velocitiesBuffer: GPUBuffer;
-  private xsphBuffer: GPUBuffer;
   private densityFieldBuffer: GPUBuffer;
   private paramsBuffer: GPUBuffer;
 
-  private accumVelXBuffer: GPUBuffer;
-  private accumVelYBuffer: GPUBuffer;
-  private accumVelZBuffer: GPUBuffer;
-  private accumWeightBuffer: GPUBuffer;
+  // Staggered MAC accumulators (P2G)
+  private accumU: GPUBuffer;
+  private accumV: GPUBuffer;
+  private accumW: GPUBuffer;
+  private accumWeightU: GPUBuffer;
+  private accumWeightV: GPUBuffer;
+  private accumWeightW: GPUBuffer;
+
+  // Staggered MAC grid face velocities (proper FLIP)
+  private uVelBuffer: GPUBuffer;      // x-faces: (R+1) x R x R
+  private vVelBuffer: GPUBuffer;      // y-faces: R x (R+1) x R
+  private wVelBuffer: GPUBuffer;      // z-faces: R x R x (R+1)
+  private uOldVelBuffer: GPUBuffer;
+  private vOldVelBuffer: GPUBuffer;
+  private wOldVelBuffer: GPUBuffer;
+
   private gridVelBuffer: GPUBuffer;
-  private gridOldVelBuffer: GPUBuffer;
+
   private pressureBuffer: GPUBuffer;
   private pressureAltBuffer: GPUBuffer;
   private divergenceBuffer: GPUBuffer;
 
-  private flipClearGridPipeline: GPUComputePipeline;
-  private flipClearGridBindGroup: GPUBindGroup;
   private flipP2GPipeline: GPUComputePipeline;
   private flipP2GBindGroup: GPUBindGroup;
-  private flipNormalizePipeline: GPUComputePipeline;
-  private flipNormalizeBindGroup: GPUBindGroup;
+  private flipNormalizeAPipeline: GPUComputePipeline;
+  private flipNormalizeABindGroup: GPUBindGroup;
+  private flipNormalizeBPipeline: GPUComputePipeline;
+  private flipNormalizeBBindGroup: GPUBindGroup;
   private flipDivergencePipeline: GPUComputePipeline;
   private flipDivergenceBindGroup: GPUBindGroup;
   private flipJacobiPipeline: GPUComputePipeline;
@@ -59,6 +71,8 @@ export class FLIPCompute {
   private flipProjectPipeline: GPUComputePipeline;
   private flipProjectBindGroupA: GPUBindGroup;
   private flipProjectBindGroupB: GPUBindGroup;
+  private flipProjectStaggeredPipeline: GPUComputePipeline;
+  private flipProjectStaggeredBindGroup: GPUBindGroup;
   private flipG2PPipeline: GPUComputePipeline;
   private flipG2PBindGroup: GPUBindGroup;
   private clearDensityFieldPipeline: GPUComputePipeline;
@@ -85,7 +99,8 @@ export class FLIPCompute {
     this.fieldSize = fieldResolution * fieldResolution * fieldResolution * 2 * 4;
 
     const N = particleCount;
-    const res3 = fieldResolution * fieldResolution * fieldResolution;
+    const res = fieldResolution;
+    const res3 = res * res * res;
 
     this.positionsBuffer = device.createBuffer({
       size: N * 16,
@@ -95,24 +110,36 @@ export class FLIPCompute {
       size: N * 16,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    this.xsphBuffer = device.createBuffer({
-      size: N * 16,
-      usage: GPUBufferUsage.STORAGE,
-    });
     this.densityFieldBuffer = device.createBuffer({
       size: this.fieldSize,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     });
 
-    this.accumVelXBuffer = device.createBuffer({ size: res3 * 4, usage: GPUBufferUsage.STORAGE });
-    this.accumVelYBuffer = device.createBuffer({ size: res3 * 4, usage: GPUBufferUsage.STORAGE });
-    this.accumVelZBuffer = device.createBuffer({ size: res3 * 4, usage: GPUBufferUsage.STORAGE });
-    this.accumWeightBuffer = device.createBuffer({ size: res3 * 4, usage: GPUBufferUsage.STORAGE });
-    this.gridVelBuffer = device.createBuffer({ size: res3 * 16, usage: GPUBufferUsage.STORAGE });
-    this.gridOldVelBuffer = device.createBuffer({ size: res3 * 16, usage: GPUBufferUsage.STORAGE });
-    this.pressureBuffer = device.createBuffer({ size: res3 * 4, usage: GPUBufferUsage.STORAGE });
-    this.pressureAltBuffer = device.createBuffer({ size: res3 * 4, usage: GPUBufferUsage.STORAGE });
-    this.divergenceBuffer = device.createBuffer({ size: res3 * 4, usage: GPUBufferUsage.STORAGE });
+    // 6 staggered MAC P2G accumulators (face-sized)
+    const uCount = (res + 1) * res * res;
+    const vCount = res * (res + 1) * res;
+    const wCount = res * res * (res + 1);
+    const SCD = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+    this.accumU = device.createBuffer({ size: uCount * 4, usage: SCD });
+    this.accumV = device.createBuffer({ size: vCount * 4, usage: SCD });
+    this.accumW = device.createBuffer({ size: wCount * 4, usage: SCD });
+    this.accumWeightU = device.createBuffer({ size: uCount * 4, usage: SCD });
+    this.accumWeightV = device.createBuffer({ size: vCount * 4, usage: SCD });
+    this.accumWeightW = device.createBuffer({ size: wCount * 4, usage: SCD });
+
+    // Staggered MAC face velocity buffers (float per face)
+    this.uVelBuffer = device.createBuffer({ size: uCount * 4, usage: SCD });
+    this.vVelBuffer = device.createBuffer({ size: vCount * 4, usage: SCD });
+    this.wVelBuffer = device.createBuffer({ size: wCount * 4, usage: SCD });
+    this.uOldVelBuffer = device.createBuffer({ size: uCount * 4, usage: SCD });
+    this.vOldVelBuffer = device.createBuffer({ size: vCount * 4, usage: SCD });
+    this.wOldVelBuffer = device.createBuffer({ size: wCount * 4, usage: SCD });
+
+    this.gridVelBuffer = device.createBuffer({ size: res3 * 16, usage: SCD });
+
+    this.pressureBuffer = device.createBuffer({ size: res3 * 4, usage: SCD });
+    this.pressureAltBuffer = device.createBuffer({ size: res3 * 4, usage: SCD });
+    this.divergenceBuffer = device.createBuffer({ size: res3 * 4, usage: SCD });
 
     this.paramsBuffer = device.createBuffer({
       size: 128,
@@ -168,36 +195,39 @@ export class FLIPCompute {
 
     device.queue.writeBuffer(this.paramsBuffer, 0, this.paramsArrayBuffer);
 
+    // Zero staggered face velocities
+    const zeroU = new Float32Array((res + 1) * res * res);
+    const zeroV = new Float32Array(res * (res + 1) * res);
+    const zeroW = new Float32Array(res * res * (res + 1));
+    device.queue.writeBuffer(this.uVelBuffer, 0, zeroU);
+    device.queue.writeBuffer(this.vVelBuffer, 0, zeroV);
+    device.queue.writeBuffer(this.wVelBuffer, 0, zeroW);
+    device.queue.writeBuffer(this.uOldVelBuffer, 0, zeroU);
+    device.queue.writeBuffer(this.vOldVelBuffer, 0, zeroV);
+    device.queue.writeBuffer(this.wOldVelBuffer, 0, zeroW);
+
+    // Zero the 6 staggered accumulators
+    device.queue.writeBuffer(this.accumU, 0, zeroU);
+    device.queue.writeBuffer(this.accumV, 0, zeroV);
+    device.queue.writeBuffer(this.accumW, 0, zeroW);
+    device.queue.writeBuffer(this.accumWeightU, 0, zeroU);
+    device.queue.writeBuffer(this.accumWeightV, 0, zeroV);
+    device.queue.writeBuffer(this.accumWeightW, 0, zeroW);
+
     const zeroGrid = new Float32Array(res3 * 4);
     device.queue.writeBuffer(this.gridVelBuffer, 0, zeroGrid);
-    device.queue.writeBuffer(this.gridOldVelBuffer, 0, zeroGrid);
 
     const S = GPUShaderStage.COMPUTE;
     const uniform = (b: number) => ({ binding: b, visibility: S, buffer: { type: 'uniform' as const } });
     const storage = (b: number) => ({ binding: b, visibility: S, buffer: { type: 'storage' as const } });
     const readOnly = (b: number) => ({ binding: b, visibility: S, buffer: { type: 'read-only-storage' as const } });
 
-    // flipClearGrid: params, accumVelX/Y/Z(rw), accumWeight(rw), pressure(rw)
-    const clearGrid = this.createPipeline(device, flipClearGridShader, [
-      uniform(0), storage(1), storage(2), storage(3), storage(4), storage(5),
-    ]);
-    this.flipClearGridPipeline = clearGrid.pipeline;
-    this.flipClearGridBindGroup = device.createBindGroup({
-      layout: clearGrid.bindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.paramsBuffer } },
-        { binding: 1, resource: { buffer: this.accumVelXBuffer } },
-        { binding: 2, resource: { buffer: this.accumVelYBuffer } },
-        { binding: 3, resource: { buffer: this.accumVelZBuffer } },
-        { binding: 4, resource: { buffer: this.accumWeightBuffer } },
-        { binding: 5, resource: { buffer: this.pressureBuffer } },
-      ],
-    });
-
-    // flipP2G: params, positions(r), velocities(r), accumVelX/Y/Z(rw), accumWeight(rw)
+    // flipP2G: params, pos(r), vel(r), accumU/V/W(rw), weightU/V/W(rw)
     const p2g = this.createPipeline(device, flipP2GShader, [
-      uniform(0), readOnly(1), readOnly(2), storage(3), storage(4), storage(5), storage(6),
-    ]);
+      uniform(0), readOnly(1), readOnly(2),
+      storage(3), storage(4), storage(5),
+      storage(6), storage(7), storage(8),
+    ], 'flipP2G');
     this.flipP2GPipeline = p2g.pipeline;
     this.flipP2GBindGroup = device.createBindGroup({
       layout: p2g.bindGroupLayout,
@@ -205,58 +235,86 @@ export class FLIPCompute {
         { binding: 0, resource: { buffer: this.paramsBuffer } },
         { binding: 1, resource: { buffer: this.positionsBuffer } },
         { binding: 2, resource: { buffer: this.velocitiesBuffer } },
-        { binding: 3, resource: { buffer: this.accumVelXBuffer } },
-        { binding: 4, resource: { buffer: this.accumVelYBuffer } },
-        { binding: 5, resource: { buffer: this.accumVelZBuffer } },
-        { binding: 6, resource: { buffer: this.accumWeightBuffer } },
+        { binding: 3, resource: { buffer: this.accumU } },
+        { binding: 4, resource: { buffer: this.accumV } },
+        { binding: 5, resource: { buffer: this.accumW } },
+        { binding: 6, resource: { buffer: this.accumWeightU } },
+        { binding: 7, resource: { buffer: this.accumWeightV } },
+        { binding: 8, resource: { buffer: this.accumWeightW } },
       ],
     });
 
-    // flipNormalize: params, accumVelX/Y/Z(rw), accumWeight(rw), gridVel(rw), gridOldVel(rw)
-    const normalize = this.createPipeline(device, flipNormalizeShader, [
-      uniform(0), storage(1), storage(2), storage(3), storage(4), storage(5), storage(6),
-    ]);
-    this.flipNormalizePipeline = normalize.pipeline;
-    this.flipNormalizeBindGroup = device.createBindGroup({
-      layout: normalize.bindGroupLayout,
+    const normalizeA = this.createPipeline(device, flipNormalizeAShader, [
+      uniform(0), storage(1), storage(2), storage(3), storage(4),
+      storage(5), storage(6), storage(7), storage(8),
+    ], 'flipNormalizeA');
+    this.flipNormalizeAPipeline = normalizeA.pipeline;
+    this.flipNormalizeABindGroup = device.createBindGroup({
+      layout: normalizeA.bindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: this.paramsBuffer } },
-        { binding: 1, resource: { buffer: this.accumVelXBuffer } },
-        { binding: 2, resource: { buffer: this.accumVelYBuffer } },
-        { binding: 3, resource: { buffer: this.accumVelZBuffer } },
-        { binding: 4, resource: { buffer: this.accumWeightBuffer } },
-        { binding: 5, resource: { buffer: this.gridVelBuffer } },
-        { binding: 6, resource: { buffer: this.gridOldVelBuffer } },
+        { binding: 1, resource: { buffer: this.accumU } },
+        { binding: 2, resource: { buffer: this.accumWeightU } },
+        { binding: 3, resource: { buffer: this.accumV } },
+        { binding: 4, resource: { buffer: this.accumWeightV } },
+        { binding: 5, resource: { buffer: this.uVelBuffer } },
+        { binding: 6, resource: { buffer: this.vVelBuffer } },
+        { binding: 7, resource: { buffer: this.uOldVelBuffer } },
+        { binding: 8, resource: { buffer: this.vOldVelBuffer } },
       ],
     });
 
-    // flipDivergence: params, gridVel(r), divergence(rw)
+    const normalizeB = this.createPipeline(device, flipNormalizeBShader, [
+      uniform(0), storage(1), storage(2), storage(3), storage(4),
+      readOnly(5), readOnly(6), storage(7),
+    ], 'flipNormalizeB');
+    this.flipNormalizeBPipeline = normalizeB.pipeline;
+    this.flipNormalizeBBindGroup = device.createBindGroup({
+      layout: normalizeB.bindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.paramsBuffer } },
+        { binding: 1, resource: { buffer: this.accumW } },
+        { binding: 2, resource: { buffer: this.accumWeightW } },
+        { binding: 3, resource: { buffer: this.wVelBuffer } },
+        { binding: 4, resource: { buffer: this.wOldVelBuffer } },
+        { binding: 5, resource: { buffer: this.accumWeightU } },
+        { binding: 6, resource: { buffer: this.accumWeightV } },
+        { binding: 7, resource: { buffer: this.gridVelBuffer } },
+      ],
+    });
+
+    // flipDivergence: params, uVel(r), vVel(r), wVel(r), divergence(w)
     const divergence = this.createPipeline(device, flipDivergenceShader, [
-      uniform(0), readOnly(1), storage(2),
-    ]);
+      uniform(0), readOnly(1), readOnly(2), readOnly(3), storage(4),
+    ], 'flipDivergence');
     this.flipDivergencePipeline = divergence.pipeline;
     this.flipDivergenceBindGroup = device.createBindGroup({
       layout: divergence.bindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: this.paramsBuffer } },
-        { binding: 1, resource: { buffer: this.gridVelBuffer } },
-        { binding: 2, resource: { buffer: this.divergenceBuffer } },
+        { binding: 1, resource: { buffer: this.uVelBuffer } },
+        { binding: 2, resource: { buffer: this.vVelBuffer } },
+        { binding: 3, resource: { buffer: this.wVelBuffer } },
+        { binding: 4, resource: { buffer: this.divergenceBuffer } },
       ],
     });
 
-    // flipJacobi: params, gridVel(r), pressureIn(r), divergence(r), pressureOut(rw)
+    // flipJacobi: params, gridVel(r), u/v/wVel(r for Neumann BC), pressureIn(r), divergence(r), pressureOut(rw)
     const jacobi = this.createPipeline(device, flipJacobiShader, [
-      uniform(0), readOnly(1), readOnly(2), readOnly(3), storage(4),
-    ]);
+      uniform(0), readOnly(1), readOnly(2), readOnly(3), readOnly(4), readOnly(5), readOnly(6), storage(7),
+    ], 'flipJacobi');
     this.flipJacobiPipeline = jacobi.pipeline;
     this.flipJacobiBindGroupA = device.createBindGroup({
       layout: jacobi.bindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: this.paramsBuffer } },
         { binding: 1, resource: { buffer: this.gridVelBuffer } },
-        { binding: 2, resource: { buffer: this.pressureBuffer } },
-        { binding: 3, resource: { buffer: this.divergenceBuffer } },
-        { binding: 4, resource: { buffer: this.pressureAltBuffer } },
+        { binding: 2, resource: { buffer: this.uVelBuffer } },
+        { binding: 3, resource: { buffer: this.vVelBuffer } },
+        { binding: 4, resource: { buffer: this.wVelBuffer } },
+        { binding: 5, resource: { buffer: this.pressureBuffer } },
+        { binding: 6, resource: { buffer: this.divergenceBuffer } },
+        { binding: 7, resource: { buffer: this.pressureAltBuffer } },
       ],
     });
     this.flipJacobiBindGroupB = device.createBindGroup({
@@ -264,16 +322,19 @@ export class FLIPCompute {
       entries: [
         { binding: 0, resource: { buffer: this.paramsBuffer } },
         { binding: 1, resource: { buffer: this.gridVelBuffer } },
-        { binding: 2, resource: { buffer: this.pressureAltBuffer } },
-        { binding: 3, resource: { buffer: this.divergenceBuffer } },
-        { binding: 4, resource: { buffer: this.pressureBuffer } },
+        { binding: 2, resource: { buffer: this.uVelBuffer } },
+        { binding: 3, resource: { buffer: this.vVelBuffer } },
+        { binding: 4, resource: { buffer: this.wVelBuffer } },
+        { binding: 5, resource: { buffer: this.pressureAltBuffer } },
+        { binding: 6, resource: { buffer: this.divergenceBuffer } },
+        { binding: 7, resource: { buffer: this.pressureBuffer } },
       ],
     });
 
     // flipProject: params, gridVel(rw), pressure(r)
     const project = this.createPipeline(device, flipProjectShader, [
       uniform(0), storage(1), readOnly(2),
-    ]);
+    ], 'flipProject');
     this.flipProjectPipeline = project.pipeline;
     this.flipProjectBindGroupA = device.createBindGroup({
       layout: project.bindGroupLayout,
@@ -292,10 +353,26 @@ export class FLIPCompute {
       ],
     });
 
-    // flipG2P: params, pos(rw), vel(rw), xsph(rw), gridVel(r), gridOldVel(r)  -- for FLIP delta
+    // flipProjectStaggered: params, uVel(rw), vVel(rw), wVel(rw), pressure(r)
+    const projectStaggered = this.createPipeline(device, flipProjectStaggeredShader, [
+      uniform(0), storage(1), storage(2), storage(3), readOnly(4),
+    ], 'flipProjectStaggered');
+    this.flipProjectStaggeredPipeline = projectStaggered.pipeline;
+    this.flipProjectStaggeredBindGroup = device.createBindGroup({
+      layout: projectStaggered.bindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.paramsBuffer } },
+        { binding: 1, resource: { buffer: this.uVelBuffer } },
+        { binding: 2, resource: { buffer: this.vVelBuffer } },
+        { binding: 3, resource: { buffer: this.wVelBuffer } },
+        { binding: 4, resource: { buffer: this.pressureBuffer } },
+      ],
+    });
+
     const g2p = this.createPipeline(device, flipG2PShader, [
-      uniform(0), storage(1), storage(2), storage(3), readOnly(4), readOnly(5),
-    ]);
+      uniform(0), storage(1), storage(2),
+      readOnly(3), readOnly(4), readOnly(5), readOnly(6), readOnly(7), readOnly(8),
+    ], 'flipG2P');
     this.flipG2PPipeline = g2p.pipeline;
     this.flipG2PBindGroup = device.createBindGroup({
       layout: g2p.bindGroupLayout,
@@ -303,16 +380,19 @@ export class FLIPCompute {
         { binding: 0, resource: { buffer: this.paramsBuffer } },
         { binding: 1, resource: { buffer: this.positionsBuffer } },
         { binding: 2, resource: { buffer: this.velocitiesBuffer } },
-        { binding: 3, resource: { buffer: this.xsphBuffer } },
-        { binding: 4, resource: { buffer: this.gridVelBuffer } },
-        { binding: 5, resource: { buffer: this.gridOldVelBuffer } },
+        { binding: 3, resource: { buffer: this.uVelBuffer } },
+        { binding: 4, resource: { buffer: this.vVelBuffer } },
+        { binding: 5, resource: { buffer: this.wVelBuffer } },
+        { binding: 6, resource: { buffer: this.uOldVelBuffer } },
+        { binding: 7, resource: { buffer: this.vOldVelBuffer } },
+        { binding: 8, resource: { buffer: this.wOldVelBuffer } },
       ],
     });
 
     // clearDensityField (reused)
     const clearDf = this.createPipeline(device, clearDensityFieldShader, [
       uniform(0), storage(1),
-    ]);
+    ], 'flipClearDensityField');
     this.clearDensityFieldPipeline = clearDf.pipeline;
     this.clearDensityFieldBindGroup = device.createBindGroup({
       layout: clearDf.bindGroupLayout,
@@ -325,14 +405,14 @@ export class FLIPCompute {
     // Jittered splat breaks axis-aligned density grid artifacts in the raymarch.
     const splat = this.createPipeline(device, flipSplatDensityShader, [
       uniform(0), readOnly(1), readOnly(2), storage(3),
-    ]);
+    ], 'flipSplatDensity');
     this.splatDensityPipeline = splat.pipeline;
     this.splatDensityBindGroup = device.createBindGroup({
       layout: splat.bindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: this.paramsBuffer } },
         { binding: 1, resource: { buffer: this.positionsBuffer } },
-        { binding: 2, resource: { buffer: this.xsphBuffer } },
+        { binding: 2, resource: { buffer: this.velocitiesBuffer } },
         { binding: 3, resource: { buffer: this.densityFieldBuffer } },
       ],
     });
@@ -342,15 +422,15 @@ export class FLIPCompute {
     device: GPUDevice,
     shader: string,
     layout: GPUBindGroupLayoutEntry[],
+    label: string,
   ): { pipeline: GPUComputePipeline; bindGroupLayout: GPUBindGroupLayout } {
-    const bindGroupLayout = device.createBindGroupLayout({ entries: layout });
-    const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
+    const bindGroupLayout = device.createBindGroupLayout({ entries: layout, label: `${label}_layout` });
+    const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout], label: `${label}_pipelineLayout` });
+    const module = device.createShaderModule({ code: shader, label: `${label}_shader` });
     const pipeline = device.createComputePipeline({
+      label,
       layout: pipelineLayout,
-      compute: {
-        module: device.createShaderModule({ code: shader }),
-        entryPoint: 'main',
-      },
+      compute: { module, entryPoint: 'main' },
     });
     return { pipeline, bindGroupLayout };
   }
@@ -412,14 +492,30 @@ export class FLIPCompute {
     const gridWG = Math.ceil(res3 / 256);
     const particleWG = Math.ceil(this.particleCount / 256);
     const fieldElements = res3 * 2;
+    const faceWG = Math.ceil(((res + 1) * res * res) / 256);
 
     for (let s = 0; s < substeps; s++) {
-      this.dispatch(encoder, this.flipClearGridPipeline, this.flipClearGridBindGroup,
-        gridWG, profiler?.timestampWrites('flipClearGrid'));
+      encoder.clearBuffer(this.uVelBuffer);
+      encoder.clearBuffer(this.vVelBuffer);
+      encoder.clearBuffer(this.wVelBuffer);
+      encoder.clearBuffer(this.uOldVelBuffer);
+      encoder.clearBuffer(this.vOldVelBuffer);
+      encoder.clearBuffer(this.wOldVelBuffer);
+      encoder.clearBuffer(this.pressureBuffer);
+      encoder.clearBuffer(this.divergenceBuffer);
+      encoder.clearBuffer(this.accumU);
+      encoder.clearBuffer(this.accumV);
+      encoder.clearBuffer(this.accumW);
+      encoder.clearBuffer(this.accumWeightU);
+      encoder.clearBuffer(this.accumWeightV);
+      encoder.clearBuffer(this.accumWeightW);
+      encoder.clearBuffer(this.gridVelBuffer);
       this.dispatch(encoder, this.flipP2GPipeline, this.flipP2GBindGroup,
         particleWG, profiler?.timestampWrites('flipP2G'));
-      this.dispatch(encoder, this.flipNormalizePipeline, this.flipNormalizeBindGroup,
-        gridWG, profiler?.timestampWrites('flipNormalize'));
+      this.dispatch(encoder, this.flipNormalizeAPipeline, this.flipNormalizeABindGroup,
+        faceWG, profiler?.timestampWrites('flipNormalizeA'));
+      this.dispatch(encoder, this.flipNormalizeBPipeline, this.flipNormalizeBBindGroup,
+        faceWG, profiler?.timestampWrites('flipNormalizeB'));
       this.dispatch(encoder, this.flipDivergencePipeline, this.flipDivergenceBindGroup,
         gridWG, profiler?.timestampWrites('flipDivergence'));
       for (let j = 0; j < JACOBI_ITERATIONS; j++) {
@@ -431,6 +527,8 @@ export class FLIPCompute {
         : this.flipProjectBindGroupB;
       this.dispatch(encoder, this.flipProjectPipeline, projectBindGroup,
         gridWG, profiler?.timestampWrites('flipProject'));
+      this.dispatch(encoder, this.flipProjectStaggeredPipeline, this.flipProjectStaggeredBindGroup,
+        faceWG, profiler?.timestampWrites('flipProjectStaggered'));
       this.dispatch(encoder, this.flipG2PPipeline, this.flipG2PBindGroup,
         particleWG, profiler?.timestampWrites('flipG2P'));
     }
@@ -480,23 +578,39 @@ export class FLIPCompute {
       vel[i * 4 + 2] = hz * 0.015;
     }
     this.device.queue.writeBuffer(this.velocitiesBuffer, 0, vel);
-    const res3 = this.fieldResolution ** 3;
-    const zeroGrid = new Float32Array(res3 * 4);
+    // Zero staggered face velocities on reset
+    const R = this.fieldResolution;
+    const zeroU = new Float32Array((R + 1) * R * R);
+    const zeroV = new Float32Array(R * (R + 1) * R);
+    const zeroW = new Float32Array(R * R * (R + 1));
+    this.device.queue.writeBuffer(this.uVelBuffer, 0, zeroU);
+    this.device.queue.writeBuffer(this.vVelBuffer, 0, zeroV);
+    this.device.queue.writeBuffer(this.wVelBuffer, 0, zeroW);
+    this.device.queue.writeBuffer(this.uOldVelBuffer, 0, zeroU);
+    this.device.queue.writeBuffer(this.vOldVelBuffer, 0, zeroV);
+    this.device.queue.writeBuffer(this.wOldVelBuffer, 0, zeroW);
+
+    const zeroGrid = new Float32Array(this.fieldResolution ** 3 * 4);
     this.device.queue.writeBuffer(this.gridVelBuffer, 0, zeroGrid);
-    this.device.queue.writeBuffer(this.gridOldVelBuffer, 0, zeroGrid);
   }
 
   dispose(destroyDevice = false) {
     this.positionsBuffer.destroy();
     this.velocitiesBuffer.destroy();
-    this.xsphBuffer.destroy();
     this.densityFieldBuffer.destroy();
-    this.accumVelXBuffer.destroy();
-    this.accumVelYBuffer.destroy();
-    this.accumVelZBuffer.destroy();
-    this.accumWeightBuffer.destroy();
+    this.accumU.destroy();
+    this.accumV.destroy();
+    this.accumW.destroy();
+    this.accumWeightU.destroy();
+    this.accumWeightV.destroy();
+    this.accumWeightW.destroy();
+    this.uVelBuffer.destroy();
+    this.vVelBuffer.destroy();
+    this.wVelBuffer.destroy();
+    this.uOldVelBuffer.destroy();
+    this.vOldVelBuffer.destroy();
+    this.wOldVelBuffer.destroy();
     this.gridVelBuffer.destroy();
-    this.gridOldVelBuffer.destroy();
     this.pressureBuffer.destroy();
     this.pressureAltBuffer.destroy();
     this.divergenceBuffer.destroy();

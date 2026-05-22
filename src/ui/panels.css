@@ -228,19 +228,22 @@ input[type="range"]::-moz-range-thumb:hover {
   padding: 4px 0 2px;
 }
 
-/* Algorithm toggle */
-.panel-algo-toggle {
+/* Algorithm picker */
+.algo-picker {
+  margin-bottom: 2px;
+}
+
+.algo-picker-toggle {
   display: flex;
   gap: 2px;
   padding: 3px;
   background: oklch(8% 0.005 260);
   border-radius: 6px;
-  margin-bottom: 10px;
 }
 
-.algo-btn {
+.algo-picker-btn {
   flex: 1;
-  padding: 5px 0;
+  padding: 6px 0;
   border: none;
   border-radius: 4px;
   background: transparent;
@@ -250,15 +253,33 @@ input[type="range"]::-moz-range-thumb:hover {
   font-weight: 600;
   letter-spacing: 0.5px;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              color 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.algo-btn:hover {
+.algo-picker-btn:hover {
   background: oklch(15% 0.005 260);
   color: oklch(70% 0.01 260);
 }
 
-.algo-btn.active {
+.algo-picker-btn.active {
   background: oklch(72% 0.12 230);
   color: oklch(10% 0.02 230);
+}
+
+.algo-picker-btn.disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.algo-picker-btn.disabled:hover {
+  background: transparent;
+  color: oklch(55% 0.01 260);
+}
+
+.algo-picker-desc {
+  padding: 6px 2px 2px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: oklch(55% 0.01 260);
 }

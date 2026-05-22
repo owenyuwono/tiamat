@@ -3,6 +3,7 @@ import type { GPUProfiler } from './GPUProfiler';
 import bufferToTextureShader from './shaders/bufferToTexture.wgsl?raw';
 import wireframeShader from './shaders/wireframe.wgsl?raw';
 import waterRaymarchShader from './shaders/waterRaymarch.wgsl?raw';
+import floorShader from './shaders/floor.wgsl?raw';
 
 export class WebGPURenderer {
   private device: GPUDevice;
@@ -13,6 +14,10 @@ export class WebGPURenderer {
   private densityTexture: GPUTexture;
   private densityTextureView: GPUTextureView;
   private linearSampler: GPUSampler;
+  private repeatSampler: GPUSampler;
+
+  private sandTexture: GPUTexture;
+  private sandTextureView: GPUTextureView;
 
   private bufferToTexPipeline: GPUComputePipeline;
   private bufferToTexBindGroupLayout: GPUBindGroupLayout;
@@ -30,6 +35,21 @@ export class WebGPURenderer {
   private wireframeUniformBuffer: GPUBuffer;
   private wireframeUniformData: Float32Array;
 
+  private floorPipeline: GPURenderPipeline;
+  private floorBindGroupLayout: GPUBindGroupLayout;
+  private floorBindGroup: GPUBindGroup;
+  private floorVertexBuffer: GPUBuffer;
+  private floorUniformBuffer: GPUBuffer;
+  private floorUniformData: Float32Array;
+  private floorVertexCount: number;
+
+  private gizmoVertexBuffer: GPUBuffer;
+  private gizmoVertexData: Float32Array;
+  private gizmoUniformBuffer: GPUBuffer;
+  private gizmoUniformData: Float32Array;
+  private gizmoBindGroup!: GPUBindGroup;
+  private gizmoWorldPos = new THREE.Vector3();
+
   private depthTexture: GPUTexture;
   private width = 0;
   private height = 0;
@@ -37,6 +57,14 @@ export class WebGPURenderer {
   private _invVP = new THREE.Matrix4();
   private _vp = new THREE.Matrix4();
   private _camPos = new THREE.Vector3();
+
+  private static readonly GIZMO_RADIUS = 5.0;
+  private static readonly OCTA_TEMPLATE = new Float32Array([
+    0.12,0,0, 0,0.12,0,   0.12,0,0, 0,-0.12,0,  0.12,0,0, 0,0,0.12,  0.12,0,0, 0,0,-0.12,
+    -0.12,0,0, 0,0.12,0, -0.12,0,0, 0,-0.12,0, -0.12,0,0, 0,0,0.12, -0.12,0,0, 0,0,-0.12,
+    0,0.12,0, 0,0,0.12,   0,0.12,0, 0,0,-0.12,
+    0,-0.12,0, 0,0,0.12, 0,-0.12,0, 0,0,-0.12,
+  ]);
 
   constructor(
     device: GPUDevice,
@@ -78,6 +106,27 @@ export class WebGPURenderer {
       addressModeV: 'clamp-to-edge',
       addressModeW: 'clamp-to-edge',
     });
+
+    this.repeatSampler = device.createSampler({
+      minFilter: 'linear',
+      magFilter: 'linear',
+      mipmapFilter: 'nearest',
+      addressModeU: 'repeat',
+      addressModeV: 'repeat',
+    });
+
+    this.sandTexture = device.createTexture({
+      size: [1, 1],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    this.sandTextureView = this.sandTexture.createView();
+    device.queue.writeTexture(
+      { texture: this.sandTexture },
+      new Uint8Array([194, 178, 128, 255]),
+      { bytesPerRow: 4 },
+      [1, 1],
+    );
 
     // Buffer-to-texture compute pipeline
     const b2tModule = device.createShaderModule({ code: bufferToTextureShader });
@@ -238,6 +287,75 @@ export class WebGPURenderer {
     });
     device.queue.writeBuffer(this.wireframeVertexBuffer, 0, new Float32Array(edges));
 
+    // Floor pipeline
+    const floorModule = device.createShaderModule({ code: floorShader });
+    this.floorUniformData = new Float32Array(20);
+    const ldArr = new THREE.Vector3(5, 8, 5).normalize();
+    this.floorUniformData[16] = ldArr.x;
+    this.floorUniformData[17] = ldArr.y;
+    this.floorUniformData[18] = ldArr.z;
+
+    this.floorUniformBuffer = device.createBuffer({
+      size: 80,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    this.floorBindGroupLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+      ],
+    });
+    this.floorPipeline = device.createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.floorBindGroupLayout] }),
+      vertex: {
+        module: floorModule,
+        entryPoint: 'vs_main',
+        buffers: [{
+          arrayStride: 24,
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: 'float32x3' },
+            { shaderLocation: 1, offset: 12, format: 'float32x3' },
+          ],
+        }],
+      },
+      fragment: {
+        module: floorModule,
+        entryPoint: 'fs_main',
+        targets: [{ format: this.format }],
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
+    });
+    this.floorBindGroup = device.createBindGroup({
+      layout: this.floorBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.floorUniformBuffer } },
+        { binding: 1, resource: this.sandTextureView },
+        { binding: 2, resource: this.repeatSampler },
+      ],
+    });
+
+    // Floor geometry — thin slab extending beyond container
+    const fhx = 3, fhz = 3, fd = 0.12;
+    const FA = [-fhx, 0, -fhz], FB = [fhx, 0, -fhz], FC = [fhx, 0, fhz], FD = [-fhx, 0, fhz];
+    const FE = [-fhx, -fd, -fhz], FF = [fhx, -fd, -fhz], FG = [fhx, -fd, fhz], FH = [-fhx, -fd, fhz];
+    const floorVerts: number[] = [];
+    const pushV = (p: number[], n: number[]) => floorVerts.push(p[0], p[1], p[2], n[0], n[1], n[2]);
+    const topN = [0,1,0], frontN = [0,0,1], backN = [0,0,-1], rightN = [1,0,0], leftN = [-1,0,0];
+    for (const v of [FA,FB,FC, FA,FC,FD]) pushV(v, topN);
+    for (const v of [FD,FC,FG, FD,FG,FH]) pushV(v, frontN);
+    for (const v of [FB,FA,FE, FB,FE,FF]) pushV(v, backN);
+    for (const v of [FC,FB,FF, FC,FF,FG]) pushV(v, rightN);
+    for (const v of [FA,FD,FH, FA,FH,FE]) pushV(v, leftN);
+    this.floorVertexCount = floorVerts.length / 6;
+    this.floorVertexBuffer = device.createBuffer({
+      size: floorVerts.length * 4,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(this.floorVertexBuffer, 0, new Float32Array(floorVerts));
+
     // Initial depth texture (will be recreated on resize)
     this.depthTexture = device.createTexture({
       size: [1, 1],
@@ -292,13 +410,15 @@ export class WebGPURenderer {
 
     this.device.queue.writeBuffer(this.renderUniformBuffer, 0, this.renderUniformData);
 
-    // Update wireframe uniforms (viewProjection matrix)
+    // Update wireframe + floor uniforms (shared viewProjection matrix)
     this._vp.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     const vpE = this._vp.elements;
     for (let i = 0; i < 16; i++) {
       this.wireframeUniformData[i] = vpE[i];
+      this.floorUniformData[i] = vpE[i];
     }
     this.device.queue.writeBuffer(this.wireframeUniformBuffer, 0, this.wireframeUniformData);
+    this.device.queue.writeBuffer(this.floorUniformBuffer, 0, this.floorUniformData);
 
     // Render pass
     const colorView = this.context.getCurrentTexture().createView();
@@ -322,13 +442,19 @@ export class WebGPURenderer {
     if (rpTs) renderPassDesc.timestampWrites = rpTs;
     const pass = encoder.beginRenderPass(renderPassDesc);
 
+    // Draw floor
+    pass.setPipeline(this.floorPipeline);
+    pass.setBindGroup(0, this.floorBindGroup);
+    pass.setVertexBuffer(0, this.floorVertexBuffer);
+    pass.draw(this.floorVertexCount);
+
     // Draw wireframe
     pass.setPipeline(this.wireframePipeline);
     pass.setBindGroup(0, this.wireframeBindGroup);
     pass.setVertexBuffer(0, this.wireframeVertexBuffer);
     pass.draw(24);
 
-    // Draw water (fullscreen triangle)
+    // Draw water (fullscreen triangle, alpha-blends over floor)
     pass.setPipeline(this.waterPipeline);
     pass.setBindGroup(0, this.waterBindGroup);
     pass.draw(3);
@@ -338,6 +464,35 @@ export class WebGPURenderer {
 
   setThreshold(value: number) {
     this.renderUniformData[19] = value;
+  }
+
+  async loadFloorTexture(url: string) {
+    const response = await fetch(url);
+    const blob = await response.blob();
+    const bitmap = await createImageBitmap(blob, { colorSpaceConversion: 'none' });
+
+    this.sandTexture.destroy();
+    this.sandTexture = this.device.createTexture({
+      size: [bitmap.width, bitmap.height],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    this.sandTextureView = this.sandTexture.createView();
+
+    this.device.queue.copyExternalImageToTexture(
+      { source: bitmap },
+      { texture: this.sandTexture },
+      [bitmap.width, bitmap.height],
+    );
+
+    this.floorBindGroup = this.device.createBindGroup({
+      layout: this.floorBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.floorUniformBuffer } },
+        { binding: 1, resource: this.sandTextureView },
+        { binding: 2, resource: this.repeatSampler },
+      ],
+    });
   }
 
   rebindComputeBuffers(densityFieldBuffer: GPUBuffer, paramsBuffer: GPUBuffer) {
@@ -354,9 +509,12 @@ export class WebGPURenderer {
   dispose() {
     this.canvas.remove();
     this.densityTexture.destroy();
+    this.sandTexture.destroy();
     this.depthTexture.destroy();
     this.renderUniformBuffer.destroy();
     this.wireframeUniformBuffer.destroy();
     this.wireframeVertexBuffer.destroy();
+    this.floorUniformBuffer.destroy();
+    this.floorVertexBuffer.destroy();
   }
 }

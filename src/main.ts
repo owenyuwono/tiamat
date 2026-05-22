@@ -6,23 +6,17 @@ import { SPHSimulation } from './sph/simulation';
 import { WaterRenderer } from './rendering/WaterRenderer';
 import { GPUCompute } from './gpu/GPUCompute';
 import { FLIPCompute } from './gpu/FLIPCompute';
+import { EulerCompute } from './gpu/EulerCompute';
 import { GPUProfiler } from './gpu/GPUProfiler';
 import { WebGPURenderer } from './gpu/WebGPURenderer';
 import { createDefaultConfig } from './ui/SimConfig';
 import type { Algorithm } from './ui/SimConfig';
+import { AlgorithmPicker } from './ui/AlgorithmPicker';
 import { ControlPanel } from './ui/ControlPanel';
 import { StatsPanel } from './ui/StatsPanel';
 
-function computeContainerSize(particleCount: number): THREE.Vector3 {
-  const spacing = 0.05;
-  const blockWidth = (Math.ceil(Math.cbrt(particleCount)) - 1) * spacing;
-  const side = Math.max(4, Math.ceil(blockWidth * 1.65));
-  return new THREE.Vector3(side, side, side);
-}
-
-function computeFieldResolution(containerSide: number): number {
-  return Math.min(160, Math.round(containerSide / 0.04));
-}
+const CONTAINER_SIZE = new THREE.Vector3(4, 4, 4);
+const FIELD_RESOLUTION = 100;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xd0d8e8);
@@ -33,14 +27,15 @@ camera.lookAt(0, 2, 0);
 
 async function init() {
   const config = createDefaultConfig();
-  let containerSize = computeContainerSize(config.particleCount);
-  let fieldResolution = computeFieldResolution(containerSize.x);
-  let domainMin = new THREE.Vector3(-containerSize.x / 2, 0, -containerSize.z / 2);
-  let domainMax = new THREE.Vector3(containerSize.x / 2, containerSize.y, containerSize.z / 2);
+  const containerSize = CONTAINER_SIZE;
+  const fieldResolution = FIELD_RESOLUTION;
+  const domainMin = new THREE.Vector3(-containerSize.x / 2, 0, -containerSize.z / 2);
+  const domainMax = new THREE.Vector3(containerSize.x / 2, containerSize.y, containerSize.z / 2);
 
   let gpuCompute: GPUCompute | null = null;
   let flipCompute: FLIPCompute | null = null;
-  let activeCompute: GPUCompute | FLIPCompute | null = null;
+  let eulerCompute: EulerCompute | null = null;
+  let activeCompute: GPUCompute | FLIPCompute | EulerCompute | null = null;
   let glRenderer: THREE.WebGLRenderer | null = null;
   let webgpuRenderer: WebGPURenderer | null = null;
   let waterRenderer: WaterRenderer | null = null;
@@ -69,7 +64,15 @@ async function init() {
 
   if (gpuCompute) {
     const device = gpuCompute.getDevice();
+    device.onuncapturederror = (e) => console.error('WebGPU uncaptured error:', e.error);
+
+    device.pushErrorScope('validation');
     flipCompute = new FLIPCompute(
+      device, config.particleCount, containerSize, fieldResolution, domainMin, domainMax, config.splatRadius,
+    );
+    device.popErrorScope().then(err => { if (err) console.error('FLIP construction validation error:', err.message); });
+
+    eulerCompute = new EulerCompute(
       device, config.particleCount, containerSize, fieldResolution, domainMin, domainMax, config.splatRadius,
     );
     activeCompute = gpuCompute;
@@ -90,6 +93,7 @@ async function init() {
     }
 
     gpuCompute.uploadInitialPositions(savedPosX, savedPosY, savedPosZ);
+    webgpuRenderer.loadFloorTexture('/sand_diff.jpg');
     console.log('WebGPU render + compute enabled');
   } else {
     glRenderer = new THREE.WebGLRenderer({ antialias: true });
@@ -120,8 +124,10 @@ async function init() {
   controls.target.set(0, 2, 0);
 
   function switchAlgorithm(algo: Algorithm) {
-    if (!gpuCompute || !flipCompute || !webgpuRenderer) return;
-    activeCompute = algo === 'sph' ? gpuCompute : flipCompute;
+    if (!gpuCompute || !flipCompute || !eulerCompute || !webgpuRenderer) return;
+    if (algo === 'sph') activeCompute = gpuCompute;
+    else if (algo === 'flip') activeCompute = flipCompute;
+    else activeCompute = eulerCompute;
     activeCompute.uploadInitialPositions(savedPosX, savedPosY, savedPosZ);
     activeCompute.resetVelocities();
     webgpuRenderer.rebindComputeBuffers(
@@ -134,13 +140,9 @@ async function init() {
     if (!gpuCompute || !webgpuRenderer) return;
     const device = gpuCompute.getDevice();
 
-    containerSize = computeContainerSize(count);
-    fieldResolution = computeFieldResolution(containerSize.x);
-    domainMin = new THREE.Vector3(-containerSize.x / 2, 0, -containerSize.z / 2);
-    domainMax = new THREE.Vector3(containerSize.x / 2, containerSize.y, containerSize.z / 2);
-
     gpuCompute.dispose();
     if (flipCompute) flipCompute.dispose();
+    if (eulerCompute) eulerCompute.dispose();
 
     gpuCompute = new GPUCompute(
       device, count, containerSize, fieldResolution, domainMin, domainMax, config.splatRadius,
@@ -148,34 +150,38 @@ async function init() {
     flipCompute = new FLIPCompute(
       device, count, containerSize, fieldResolution, domainMin, domainMax, config.splatRadius,
     );
-    activeCompute = config.algorithm === 'sph' ? gpuCompute : flipCompute;
+    eulerCompute = new EulerCompute(
+      device, count, containerSize, fieldResolution, domainMin, domainMax, config.splatRadius,
+    );
+    if (config.algorithm === 'sph') activeCompute = gpuCompute;
+    else if (config.algorithm === 'flip') activeCompute = flipCompute;
+    else activeCompute = eulerCompute;
 
     sim = generatePositions(count);
     activeCompute.uploadInitialPositions(savedPosX, savedPosY, savedPosZ);
 
-    webgpuRenderer.dispose();
-    webgpuRenderer = new WebGPURenderer(
-      device,
+    webgpuRenderer.rebindComputeBuffers(
       activeCompute.getDensityFieldBuffer(),
       activeCompute.getParamsBuffer(),
-      activeCompute.getFieldResolution(),
-      domainMin, domainMax, containerSize,
     );
-    webgpuRenderer.resize(window.innerWidth, window.innerHeight, Math.min(window.devicePixelRatio, 2), config.renderScale);
-    webgpuRenderer.setThreshold(config.threshold);
-    controls.dispose();
-    controls = new OrbitControls(camera, webgpuRenderer.canvas);
-    controls.enableDamping = true;
-    controls.target.set(0, containerSize.y / 2, 0);
 
     profiler?.setParticleCount(count);
   }
 
   const isGPU = !!gpuCompute;
   const statsPanel = new StatsPanel();
+
+  const algorithmPicker = isGPU
+    ? new AlgorithmPicker(config.algorithm, (algo) => {
+        config.algorithm = algo;
+        switchAlgorithm(algo);
+      })
+    : undefined;
+
   // @ts-expect-error kept for dispose reference
   const _controlPanel = new ControlPanel(config, {
     gpuMode: isGPU,
+    algorithmPicker,
     onReset: () => {
       if (activeCompute) {
         activeCompute.uploadInitialPositions(savedPosX, savedPosY, savedPosZ);
@@ -189,9 +195,6 @@ async function init() {
     },
     onParticleCountChange: (count: number) => {
       reinitGPU(count);
-    },
-    onAlgorithmChange: (algo: Algorithm) => {
-      switchAlgorithm(algo);
     },
   });
 
@@ -230,6 +233,7 @@ async function init() {
       profiler?.beginFrame();
       profiler?.setSubsteps(substeps);
       const device = activeCompute.getDevice();
+      device.pushErrorScope('validation');
       const encoder = device.createCommandEncoder();
       if (!config.paused) {
         activeCompute.encodeStep(encoder, substeps, profiler);
@@ -237,6 +241,7 @@ async function init() {
       webgpuRenderer.encodeFrame(encoder, camera, profiler);
       profiler?.resolve(encoder);
       device.queue.submit([encoder.finish()]);
+      device.popErrorScope().then(err => { if (err) console.error('Frame validation error:', err.message); });
       await device.queue.onSubmittedWorkDone();
       await profiler?.readback();
     } else if (glRenderer && waterRenderer) {

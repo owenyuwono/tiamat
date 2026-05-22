@@ -35,7 +35,7 @@ struct Params {
 
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> positions: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read> xsph: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read> velocities: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> densityField: array<atomic<u32>>;
 
 const FIXED_POINT_SCALE: u32 = 10000u;
@@ -45,8 +45,8 @@ fn splatJitter(particleIdx: u32) -> vec3f {
   let jx = fract(sin(n * 127.1) * 43758.5453) * 2.0 - 1.0;
   let jy = fract(sin(n * 269.5) * 43758.5453) * 2.0 - 1.0;
   let jz = fract(sin(n * 419.2) * 43758.5453) * 2.0 - 1.0;
-  // Stronger dither (0.8 cell) to break up grid-scale lumps in the density field.
-  return vec3f(jx, jy, jz) * params.fieldCellSize * 0.8;
+  // Max dither (~1 cell) to break grid-scale lumps; larger splat radius (0.15) + this dither = smooth field.
+  return vec3f(jx, jy, jz) * params.fieldCellSize * 1.0;
 }
 
 @compute @workgroup_size(256)
@@ -57,7 +57,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 
   let pos = positions[i].xyz + splatJitter(i);
-  let impact = length(xsph[i].xyz);
+  let impact = length(velocities[i].xyz);
 
   let res = i32(params.fieldResolution);
   let resM1 = res - 1;

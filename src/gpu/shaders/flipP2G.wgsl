@@ -36,59 +36,144 @@ struct Params {
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> positions: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read> velocities: array<vec4<f32>>;
-@group(0) @binding(3) var<storage, read_write> accumVelX: array<atomic<i32>>;
-@group(0) @binding(4) var<storage, read_write> accumVelY: array<atomic<i32>>;
-@group(0) @binding(5) var<storage, read_write> accumVelZ: array<atomic<i32>>;
-@group(0) @binding(6) var<storage, read_write> accumWeight: array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read_write> accumU: array<atomic<i32>>;
+@group(0) @binding(4) var<storage, read_write> accumV: array<atomic<i32>>;
+@group(0) @binding(5) var<storage, read_write> accumW: array<atomic<i32>>;
+@group(0) @binding(6) var<storage, read_write> weightU: array<atomic<u32>>;
+@group(0) @binding(7) var<storage, read_write> weightV: array<atomic<u32>>;
+@group(0) @binding(8) var<storage, read_write> weightW: array<atomic<u32>>;
 
 const SCALE: f32 = 10000.0;
 
-fn cellIdx(ix: i32, iy: i32, iz: i32, res: i32) -> u32 {
-  return u32(iz * res * res + iy * res + ix);
+fn idxU(i: i32, j: i32, k: i32, res: i32) -> u32 {
+  let sx = res + 1;
+  let sy = res;
+  return u32(i) + u32(sx) * (u32(j) + u32(sy) * u32(k));
+}
+
+fn idxV(i: i32, j: i32, k: i32, res: i32) -> u32 {
+  let sx = res;
+  let sy = res + 1;
+  return u32(i) + u32(sx) * (u32(j) + u32(sy) * u32(k));
+}
+
+fn idxW(i: i32, j: i32, k: i32, res: i32) -> u32 {
+  let sx = res;
+  let sy = res;
+  return u32(i) + u32(sx) * (u32(j) + u32(sy) * u32(k));
 }
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3u) {
-  let i = gid.x;
-  if (i >= params.particleCount) { return; }
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let pid = gid.x;
+  if (pid >= params.particleCount) { return; }
 
-  let pos = positions[i].xyz;
-  let vel = velocities[i].xyz;
+  let pos = positions[pid].xyz;
+  let vel = velocities[pid].xyz;
   let res = i32(params.fieldResolution);
   let invDx = params.fieldInvCellSize;
+  let minX = params.fieldDomainMinX;
+  let minY = params.fieldDomainMinY;
+  let minZ = params.fieldDomainMinZ;
 
-  let gx = (pos.x - params.fieldDomainMinX) * invDx - 0.5;
-  let gy = (pos.y - params.fieldDomainMinY) * invDx - 0.5;
-  let gz = (pos.z - params.fieldDomainMinZ) * invDx - 0.5;
+  // U (x-faces)
+  {
+    let gx = (pos.x - minX) * invDx;
+    let gy = (pos.y - minY) * invDx - 0.5;
+    let gz = (pos.z - minZ) * invDx - 0.5;
 
-  let i0 = i32(floor(gx));
-  let j0 = i32(floor(gy));
-  let k0 = i32(floor(gz));
+    let i0 = i32(floor(gx));
+    let j0 = i32(floor(gy));
+    let k0 = i32(floor(gz));
+    let fx = gx - f32(i0);
+    let fy = gy - f32(j0);
+    let fz = gz - f32(k0);
 
-  let fx = gx - f32(i0);
-  let fy = gy - f32(j0);
-  let fz = gz - f32(k0);
+    for (var di = 0; di < 2; di++) {
+      let ii = i0 + di;
+      if (ii < 0 || ii > res) { continue; }
+      let wx = select(1.0 - fx, fx, di == 1);
+      for (var dj = 0; dj < 2; dj++) {
+        let jj = j0 + dj;
+        if (jj < 0 || jj >= res) { continue; }
+        let wy = select(1.0 - fy, fy, dj == 1);
+        for (var dk = 0; dk < 2; dk++) {
+          let kk = k0 + dk;
+          if (kk < 0 || kk >= res) { continue; }
+          let wz = select(1.0 - fz, fz, dk == 1);
+          let w = wx * wy * wz;
+          let idx = idxU(ii, jj, kk, res);
+          atomicAdd(&accumU[idx], i32(vel.x * w * SCALE));
+          atomicAdd(&weightU[idx], u32(w * SCALE));
+        }
+      }
+    }
+  }
 
-  for (var dz = 0; dz <= 1; dz++) {
-    let wz = select(1.0 - fz, fz, dz == 1);
-    let kk = k0 + dz;
-    if (kk < 0 || kk >= res) { continue; }
-    for (var dy = 0; dy <= 1; dy++) {
-      let wy = select(1.0 - fy, fy, dy == 1);
-      let jj = j0 + dy;
-      if (jj < 0 || jj >= res) { continue; }
-      for (var dx = 0; dx <= 1; dx++) {
-        let wx = select(1.0 - fx, fx, dx == 1);
-        let ii = i0 + dx;
-        if (ii < 0 || ii >= res) { continue; }
+  // V (y-faces)
+  {
+    let gx = (pos.x - minX) * invDx - 0.5;
+    let gy = (pos.y - minY) * invDx;
+    let gz = (pos.z - minZ) * invDx - 0.5;
 
-        let w = wx * wy * wz;
-        let idx = cellIdx(ii, jj, kk, res);
+    let i0 = i32(floor(gx));
+    let j0 = i32(floor(gy));
+    let k0 = i32(floor(gz));
+    let fx = gx - f32(i0);
+    let fy = gy - f32(j0);
+    let fz = gz - f32(k0);
 
-        atomicAdd(&accumVelX[idx], i32(vel.x * w * SCALE));
-        atomicAdd(&accumVelY[idx], i32(vel.y * w * SCALE));
-        atomicAdd(&accumVelZ[idx], i32(vel.z * w * SCALE));
-        atomicAdd(&accumWeight[idx], u32(w * SCALE));
+    for (var di = 0; di < 2; di++) {
+      let ii = i0 + di;
+      if (ii < 0 || ii >= res) { continue; }
+      let wx = select(1.0 - fx, fx, di == 1);
+      for (var dj = 0; dj < 2; dj++) {
+        let jj = j0 + dj;
+        if (jj < 0 || jj > res) { continue; }
+        let wy = select(1.0 - fy, fy, dj == 1);
+        for (var dk = 0; dk < 2; dk++) {
+          let kk = k0 + dk;
+          if (kk < 0 || kk >= res) { continue; }
+          let wz = select(1.0 - fz, fz, dk == 1);
+          let w = wx * wy * wz;
+          let idx = idxV(ii, jj, kk, res);
+          atomicAdd(&accumV[idx], i32(vel.y * w * SCALE));
+          atomicAdd(&weightV[idx], u32(w * SCALE));
+        }
+      }
+    }
+  }
+
+  // W (z-faces)
+  {
+    let gx = (pos.x - minX) * invDx - 0.5;
+    let gy = (pos.y - minY) * invDx - 0.5;
+    let gz = (pos.z - minZ) * invDx;
+
+    let i0 = i32(floor(gx));
+    let j0 = i32(floor(gy));
+    let k0 = i32(floor(gz));
+    let fx = gx - f32(i0);
+    let fy = gy - f32(j0);
+    let fz = gz - f32(k0);
+
+    for (var di = 0; di < 2; di++) {
+      let ii = i0 + di;
+      if (ii < 0 || ii >= res) { continue; }
+      let wx = select(1.0 - fx, fx, di == 1);
+      for (var dj = 0; dj < 2; dj++) {
+        let jj = j0 + dj;
+        if (jj < 0 || jj >= res) { continue; }
+        let wy = select(1.0 - fy, fy, dj == 1);
+        for (var dk = 0; dk < 2; dk++) {
+          let kk = k0 + dk;
+          if (kk < 0 || kk > res) { continue; }
+          let wz = select(1.0 - fz, fz, dk == 1);
+          let w = wx * wy * wz;
+          let idx = idxW(ii, jj, kk, res);
+          atomicAdd(&accumW[idx], i32(vel.z * w * SCALE));
+          atomicAdd(&weightW[idx], u32(w * SCALE));
+        }
       }
     }
   }

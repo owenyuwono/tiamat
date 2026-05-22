@@ -10,7 +10,7 @@ import integrateShader from './shaders/integrate.wgsl?raw';
 import clearDensityFieldShader from './shaders/clearDensityField.wgsl?raw';
 import splatDensityShader from './shaders/splatDensity.wgsl?raw';
 
-const MAX_PER_CELL = 32;
+const MAX_PER_CELL = 16;
 const FIXED_POINT_SCALE = 10000.0;
 
 function nextPowerOfTwo(n: number): number {
@@ -77,7 +77,13 @@ export class GPUCompute {
     if (adapter.features.has('timestamp-query')) {
       features.push('timestamp-query');
     }
-    const device = await adapter.requestDevice({ requiredFeatures: features });
+    const device = await adapter.requestDevice({
+      requiredFeatures: features,
+      requiredLimits: {
+        maxStorageBuffersPerShaderStage: adapter.limits.maxStorageBuffersPerShaderStage,
+        maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+      },
+    });
     return new GPUCompute(device, particleCount, containerSize, fieldResolution, domainMin, domainMax, splatRadius);
   }
 
@@ -92,7 +98,7 @@ export class GPUCompute {
   ) {
     this.device = device;
     this.particleCount = particleCount;
-    this.tableSize = nextPowerOfTwo(particleCount * 3);
+    this.tableSize = nextPowerOfTwo(particleCount * 2);
     this.fieldResolution = fieldResolution;
     this.fieldSize = fieldResolution * fieldResolution * fieldResolution * 2 * 4;
 
