@@ -34,6 +34,7 @@ const RENDER_SLIDERS: SliderDef[] = [
   { key: 'renderScale', label: 'Render Scale', min: 0.25, max: 1.0, step: 0.05, format: v => (v * 100).toFixed(0) + '%' },
 ];
 
+
 export class ControlPanel {
   private el: HTMLDivElement;
   private config: SimConfig;
@@ -72,6 +73,7 @@ export class ControlPanel {
       const advanced = this.buildSection('Advanced', advancedSliders);
       advanced.classList.add('collapsed');
       this.el.appendChild(advanced);
+
     }
 
     document.body.appendChild(this.el);
@@ -104,8 +106,17 @@ export class ControlPanel {
     resetBtn.textContent = 'Reset';
     resetBtn.addEventListener('click', () => this.callbacks.onReset());
 
+    const lightBtn = document.createElement('button');
+    lightBtn.className = 'panel-btn';
+    lightBtn.textContent = 'Light: On';
+    lightBtn.addEventListener('click', () => {
+      this.config.lightEnabled = !this.config.lightEnabled;
+      lightBtn.textContent = this.config.lightEnabled ? 'Light: On' : 'Light: Off';
+    });
+
     btnRow.appendChild(this.pauseBtn);
     btnRow.appendChild(resetBtn);
+    btnRow.appendChild(lightBtn);
 
     const hint = document.createElement('div');
     hint.style.cssText = 'font-size:10px;color:oklch(50% 0.01 260);text-align:center;margin-top:6px;';

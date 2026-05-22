@@ -15,11 +15,11 @@ import { AlgorithmPicker } from './ui/AlgorithmPicker';
 import { ControlPanel } from './ui/ControlPanel';
 import { StatsPanel } from './ui/StatsPanel';
 
-const CONTAINER_SIZE = new THREE.Vector3(4, 4, 4);
+const CONTAINER_SIZE = new THREE.Vector3(6, 4, 6);
 const FIELD_RESOLUTION = 100;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xd0d8e8);
+scene.background = new THREE.Color(0x87CEEB);
 
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
 camera.position.set(6, 4.5, 6);
@@ -178,8 +178,7 @@ async function init() {
       })
     : undefined;
 
-  // @ts-expect-error kept for dispose reference
-  const _controlPanel = new ControlPanel(config, {
+  new ControlPanel(config, {
     gpuMode: isGPU,
     algorithmPicker,
     onReset: () => {
@@ -220,13 +219,14 @@ async function init() {
     const dt = dtMs / 1000;
     lastTime = now;
 
-    const fixedDt = 0.008;
+    const fixedDt = 0.004;
     const substeps = config.paused ? 0 : Math.min(Math.ceil(dt / fixedDt), config.substepLimit);
 
     controls.update();
     camera.updateMatrixWorld();
 
     if (activeCompute && webgpuRenderer) {
+      webgpuRenderer.setLightEnabled(config.lightEnabled);
       activeCompute.updateSimConfig(config);
       webgpuRenderer.setThreshold(config.threshold);
 

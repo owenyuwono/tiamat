@@ -54,16 +54,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   var pos = positions[i].xyz;
 
   vel += forces[i].xyz * invRho * params.dt;
-  vel += params.xsphEpsilon * xsph[i].xyz;
 
-  vel *= 1.0 - 0.5 * params.dt;
+  vel *= 1.0 - 1.5 * params.dt;
 
   let speed2 = dot(vel, vel);
   if (speed2 > params.maxVelocity * params.maxVelocity) {
     vel *= params.maxVelocity / sqrt(speed2);
   }
 
-  pos += vel * params.dt;
+  pos += (vel + params.xsphEpsilon * xsph[i].xyz) * params.dt;
 
   if (pos.x < -params.halfContainerX) {
     pos.x = -params.halfContainerX;

@@ -43,13 +43,6 @@ export class WebGPURenderer {
   private floorUniformData: Float32Array;
   private floorVertexCount: number;
 
-  private gizmoVertexBuffer: GPUBuffer;
-  private gizmoVertexData: Float32Array;
-  private gizmoUniformBuffer: GPUBuffer;
-  private gizmoUniformData: Float32Array;
-  private gizmoBindGroup!: GPUBindGroup;
-  private gizmoWorldPos = new THREE.Vector3();
-
   private depthTexture: GPUTexture;
   private width = 0;
   private height = 0;
@@ -58,13 +51,7 @@ export class WebGPURenderer {
   private _vp = new THREE.Matrix4();
   private _camPos = new THREE.Vector3();
 
-  private static readonly GIZMO_RADIUS = 5.0;
-  private static readonly OCTA_TEMPLATE = new Float32Array([
-    0.12,0,0, 0,0.12,0,   0.12,0,0, 0,-0.12,0,  0.12,0,0, 0,0,0.12,  0.12,0,0, 0,0,-0.12,
-    -0.12,0,0, 0,0.12,0, -0.12,0,0, 0,-0.12,0, -0.12,0,0, 0,0,0.12, -0.12,0,0, 0,0,-0.12,
-    0,0.12,0, 0,0,0.12,   0,0.12,0, 0,0,-0.12,
-    0,-0.12,0, 0,0,0.12, 0,-0.12,0, 0,0,-0.12,
-  ]);
+  private static readonly LIGHT_DIR = new THREE.Vector3(5, 8, 5).normalize();
 
   constructor(
     device: GPUDevice,
@@ -168,7 +155,7 @@ export class WebGPURenderer {
     this.renderUniformData[21] = domainMax.y;
     this.renderUniformData[22] = domainMax.z;
     // lightDir (offset 24)
-    const ld = new THREE.Vector3(5, 8, 5).normalize();
+    const ld = WebGPURenderer.LIGHT_DIR;
     this.renderUniformData[24] = ld.x;
     this.renderUniformData[25] = ld.y;
     this.renderUniformData[26] = ld.z;
@@ -176,10 +163,10 @@ export class WebGPURenderer {
     this.renderUniformData[28] = 1.0;
     this.renderUniformData[29] = 1.0;
     this.renderUniformData[30] = 1.0;
-    // bgColor (offset 32) — 0xd0d8e8
-    this.renderUniformData[32] = 0xd0 / 255;
-    this.renderUniformData[33] = 0xd8 / 255;
-    this.renderUniformData[34] = 0xe8 / 255;
+    // bgColor (offset 32) — 0x87CEEB (sky blue)
+    this.renderUniformData[32] = 0x87 / 255;
+    this.renderUniformData[33] = 0xCE / 255;
+    this.renderUniformData[34] = 0xEB / 255;
 
     // Water render pipeline
     const waterModule = device.createShaderModule({ code: waterRaymarchShader });
@@ -290,10 +277,9 @@ export class WebGPURenderer {
     // Floor pipeline
     const floorModule = device.createShaderModule({ code: floorShader });
     this.floorUniformData = new Float32Array(20);
-    const ldArr = new THREE.Vector3(5, 8, 5).normalize();
-    this.floorUniformData[16] = ldArr.x;
-    this.floorUniformData[17] = ldArr.y;
-    this.floorUniformData[18] = ldArr.z;
+    this.floorUniformData[16] = ld.x;
+    this.floorUniformData[17] = ld.y;
+    this.floorUniformData[18] = ld.z;
 
     this.floorUniformBuffer = device.createBuffer({
       size: 80,
@@ -427,7 +413,7 @@ export class WebGPURenderer {
     const renderPassDesc: GPURenderPassDescriptor = {
       colorAttachments: [{
         view: colorView,
-        clearValue: { r: 0xd0 / 255, g: 0xd8 / 255, b: 0xe8 / 255, a: 1.0 },
+        clearValue: { r: 0x87 / 255, g: 0xCE / 255, b: 0xEB / 255, a: 1.0 },
         loadOp: 'clear',
         storeOp: 'store',
       }],
@@ -464,6 +450,16 @@ export class WebGPURenderer {
 
   setThreshold(value: number) {
     this.renderUniformData[19] = value;
+  }
+
+  setLightEnabled(enabled: boolean) {
+    const ld = enabled ? WebGPURenderer.LIGHT_DIR : new THREE.Vector3(0, 0, 0);
+    this.renderUniformData[24] = ld.x;
+    this.renderUniformData[25] = ld.y;
+    this.renderUniformData[26] = ld.z;
+    this.floorUniformData[16] = ld.x;
+    this.floorUniformData[17] = ld.y;
+    this.floorUniformData[18] = ld.z;
   }
 
   async loadFloorTexture(url: string) {

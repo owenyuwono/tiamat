@@ -58,11 +58,65 @@ fn intersectAABB(ro: vec3<f32>, rd: vec3<f32>) -> vec2<f32> {
 
 fn estimateNormalRaw(p: vec3<f32>) -> vec3<f32> {
   let e = 0.02;
-  return
-    vec3<f32>(1.0, -1.0, -1.0) * sampleDensity(p + vec3<f32>(e, -e, -e)) +
-    vec3<f32>(-1.0, -1.0, 1.0) * sampleDensity(p + vec3<f32>(-e, -e, e)) +
-    vec3<f32>(-1.0, 1.0, -1.0) * sampleDensity(p + vec3<f32>(-e, e, -e)) +
-    vec3<f32>(1.0, 1.0, 1.0)   * sampleDensity(p + vec3<f32>(e, e, e));
+  return vec3<f32>(
+    sampleDensity(p + vec3<f32>(e, 0.0, 0.0)) - sampleDensity(p - vec3<f32>(e, 0.0, 0.0)),
+    sampleDensity(p + vec3<f32>(0.0, e, 0.0)) - sampleDensity(p - vec3<f32>(0.0, e, 0.0)),
+    sampleDensity(p + vec3<f32>(0.0, 0.0, e)) - sampleDensity(p - vec3<f32>(0.0, 0.0, e))
+  );
+}
+
+fn distributionGGX(NdotH: f32, roughness: f32) -> f32 {
+  let a = roughness * roughness;
+  let a2 = a * a;
+  let d = NdotH * NdotH * (a2 - 1.0) + 1.0;
+  return a2 / (3.14159265 * d * d);
+}
+
+fn geometrySchlickGGX(NdotX: f32, roughness: f32) -> f32 {
+  let r = roughness + 1.0;
+  let k = (r * r) / 8.0;
+  return NdotX / (NdotX * (1.0 - k) + k);
+}
+
+fn geometrySmith(NdotV: f32, NdotL: f32, roughness: f32) -> f32 {
+  return geometrySchlickGGX(NdotV, roughness) * geometrySchlickGGX(NdotL, roughness);
+}
+
+fn shadowMarch(origin: vec3<f32>, lightDir: vec3<f32>, maxDist: f32) -> f32 {
+  var accumDensity = 0.0;
+  let steps = 16;
+  let shadowStepSize = maxDist / f32(steps);
+  for (var i = 1; i <= steps; i++) {
+    let p = origin + lightDir * (f32(i) * shadowStepSize);
+    let uv = worldToUV(p);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || uv.z < 0.0 || uv.z > 1.0) {
+      break;
+    }
+    let d = sampleDensity(p);
+    accumDensity += max(d - params.threshold, 0.0);
+  }
+  return exp(-accumDensity * 3.0 * shadowStepSize);
+}
+
+fn sampleAO(origin: vec3<f32>, normal: vec3<f32>) -> f32 {
+  var occlusion = 0.0;
+  let offsets = array<f32, 4>(0.04, 0.08, 0.16, 0.32);
+  let weights = array<f32, 4>(0.4, 0.3, 0.2, 0.1);
+  for (var i = 0u; i < 4u; i++) {
+    let p = origin + normal * offsets[i];
+    let d = sampleDensity(p);
+    occlusion += weights[i] * smoothstep(0.0, params.threshold * 2.0, d);
+  }
+  return 1.0 - occlusion * 0.6;
+}
+
+fn acesFilm(x: vec3<f32>) -> vec3<f32> {
+  let a = 2.51;
+  let b = 0.03;
+  let c = 2.43;
+  let d = 0.59;
+  let e = 0.14;
+  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 @fragment
@@ -143,26 +197,37 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
     }
   }
   if (depth == 0.0) { depth = tD - t; }
-  let depthFactor = 1.0 - exp(-depth * 3.0);
+  let depthFactor = 1.0 - exp(-depth * 1.5);
 
-  let deepColor = vec3<f32>(0.02, 0.12, 0.42);
-  let shallowColor = vec3<f32>(0.1, 0.4, 0.9);
-  var waterColor = mix(shallowColor, deepColor, depthFactor);
-  waterColor *= vec3<f32>(0.8, 0.88, 1.0);
+  let absorption = vec3<f32>(1.5, 0.4, 0.3);
+  let transmittance = exp(-absorption * depth);
+  var waterColor = transmittance * vec3<f32>(0.4, 0.85, 0.8) + (vec3<f32>(1.0) - transmittance) * vec3<f32>(0.02, 0.3, 0.4);
   waterColor = mix(waterColor, vec3<f32>(1.0), foam);
 
-  let NdotL = max(dot(N, L), 0.0);
-  let spec = pow(max(dot(N, H), 0.0), mix(128.0, 16.0, foam));
+  let shadow = shadowMarch(hitPos + N * 0.03, L, 2.0);
+  let ao = sampleAO(hitPos, N);
 
-  let ambient = waterColor * mix(0.5, 0.9, foam);
-  let diffuse = waterColor * NdotL * 0.6;
-  let specular = params.lightColor * spec * mix(2.0, 0.5, foam);
+  let NdotL = max(dot(N, L), 0.001);
+  let NdotV = max(dot(N, V), 0.001);
+  let NdotH = max(dot(N, H), 0.0);
+
+  let roughness = mix(0.15, 0.6, foam);
+  let F0 = mix(0.02, 0.04, foam);
+  let D = distributionGGX(NdotH, roughness);
+  let G = geometrySmith(NdotV, NdotL, roughness);
+  let F = F0 + (1.0 - F0) * pow(1.0 - max(dot(H, V), 0.0), 5.0);
+  let specBRDF = (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
+
+  let ambient = waterColor * mix(0.65, 0.9, foam) * ao;
+  let diffuse = waterColor * NdotL * 0.6 * shadow;
+  let specular = params.lightColor * specBRDF * NdotL * shadow;
   var color = ambient + diffuse + specular;
 
-  let reflColor = mix(mix(params.bgColor, vec3<f32>(0.3, 0.5, 0.9), 0.4), params.bgColor, foam);
+  let reflColor = mix(mix(params.bgColor, vec3<f32>(0.5, 0.8, 0.9), 0.4), params.bgColor, foam);
   color = mix(color, reflColor, fresnel * 0.4);
 
-  let alpha = clamp(depthFactor * 0.85 + 0.15 + foam, 0.0, 1.0);
+  let mapped = acesFilm(color);
+  let alpha = clamp(depthFactor * 0.7 + 0.05 + foam, 0.0, 1.0);
 
-  return vec4<f32>(color, alpha);
+  return vec4<f32>(mapped, alpha);
 }
