@@ -85,7 +85,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
           let w = t * t * t;
           let idx = u32((iz * res * res + iy * res + ix) * 2);
           atomicAdd(&densityField[idx], u32(w * f32(FIXED_POINT_SCALE)));
-          atomicAdd(&densityField[idx + 1u], u32(w * impact * f32(FIXED_POINT_SCALE)));
+          atomicAdd(&densityField[idx + 1u], u32(w * impact * 5.0 * f32(FIXED_POINT_SCALE)));
         }
       }
     }

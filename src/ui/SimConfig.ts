@@ -33,11 +33,11 @@ export function createDefaultConfig(): SimConfig {
     maxVelocity: SPH.maxVelocity,
     xsphEpsilon: SPH.xsphEpsilon,
     surfaceTension: SPH.surfaceTension,
-    splatRadius: 0.10,
-    threshold: 0.65,
+    splatRadius: 0.05,
+    threshold: 0.3,
     renderScale: 0.5,
     paused: false,
-    substepLimit: 6,
+    substepLimit: 3,
     lightEnabled: true,
   };
 }

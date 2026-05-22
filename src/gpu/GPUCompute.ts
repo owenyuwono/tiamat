@@ -10,7 +10,7 @@ import integrateShader from './shaders/integrate.wgsl?raw';
 import clearDensityFieldShader from './shaders/clearDensityField.wgsl?raw';
 import splatDensityShader from './shaders/splatDensity.wgsl?raw';
 
-const MAX_PER_CELL = 16;
+const MAX_PER_CELL = 32;
 const FIXED_POINT_SCALE = 10000.0;
 
 function nextPowerOfTwo(n: number): number {
@@ -98,7 +98,7 @@ export class GPUCompute {
   ) {
     this.device = device;
     this.particleCount = particleCount;
-    this.tableSize = nextPowerOfTwo(particleCount * 2);
+    this.tableSize = nextPowerOfTwo(particleCount * 3);
     this.fieldResolution = fieldResolution;
     this.fieldSize = fieldResolution * fieldResolution * fieldResolution * 2 * 4;
 
@@ -183,7 +183,7 @@ export class GPUCompute {
     this.paramsF32[14] = SPH.collisionStiffness;
     this.paramsF32[15] = SPH.xsphEpsilon;
     this.paramsF32[16] = SPH.surfaceTension;
-    this.paramsF32[17] = 0.004;
+    this.paramsF32[17] = 0.008;
     this.paramsF32[18] = 315 / (64 * Math.PI * Math.pow(H, 9));
     this.paramsF32[19] = -45 / (Math.PI * Math.pow(H, 6));
     this.paramsF32[20] = 45 / (Math.PI * Math.pow(H, 6));
@@ -364,7 +364,7 @@ export class GPUCompute {
   getFieldResolution(): number { return this.fieldResolution; }
 
   encodeStep(encoder: GPUCommandEncoder, substeps: number, profiler?: GPUProfiler | null) {
-    const fixedDt = 0.004;
+    const fixedDt = 0.008;
     this.paramsF32[17] = fixedDt;
     this.device.queue.writeBuffer(this.paramsBuffer, 0, this.paramsArrayBuffer);
 
@@ -447,7 +447,7 @@ export class GPUCompute {
     this.paramsF32[16] = config.surfaceTension;
     this.paramsF32[30] = config.splatRadius * config.splatRadius;
     const fieldCellSize = this.paramsF32[28];
-    this.paramsU32[31] = Math.ceil(config.splatRadius / fieldCellSize);
+    this.paramsU32[31] = Math.max(2, Math.ceil(config.splatRadius / fieldCellSize));
   }
 
   resetVelocities() {

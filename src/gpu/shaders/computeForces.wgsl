@@ -47,13 +47,6 @@ fn hashCell(cx: i32, cy: i32, cz: i32, tableSize: u32) -> u32 {
   return u32(h & 0x7FFFFFFF) % tableSize;
 }
 
-fn mirrorForceContrib(dist: f32, pressureI: f32, densityI: f32) -> f32 {
-  let r = 2.0 * dist;
-  if (r >= params.H || r < 1e-6) { return 0.0; }
-  let hr = params.H - r;
-  return -params.mass * pressureI / densityI * params.spikyCoeff * hr * hr;
-}
-
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
@@ -127,27 +120,33 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
   }
 
-  let xi = posI.x;
-  let yi = posI.y;
-  let zi = posI.z;
+  let wallDist = params.collisionRadius * 2.0;
+  let wallK = params.collisionStiffness * 2.0;
 
-  if (yi < params.H) {
-    force.y += mirrorForceContrib(yi, pressureI, densityI);
+  let dLeft = posI.x - (-params.halfContainerX);
+  let dRight = params.halfContainerX - posI.x;
+  let dBottom = posI.y;
+  let dTop = params.containerMaxY - posI.y;
+  let dBack = posI.z - (-params.halfContainerZ);
+  let dFront = params.halfContainerZ - posI.z;
+
+  if (dLeft < wallDist) {
+    force.x += wallK * (wallDist - dLeft);
   }
-  if (params.containerMaxY - yi < params.H) {
-    force.y -= mirrorForceContrib(params.containerMaxY - yi, pressureI, densityI);
+  if (dRight < wallDist) {
+    force.x -= wallK * (wallDist - dRight);
   }
-  if (xi + params.halfContainerX < params.H) {
-    force.x += mirrorForceContrib(xi + params.halfContainerX, pressureI, densityI);
+  if (dBottom < wallDist) {
+    force.y += wallK * (wallDist - dBottom);
   }
-  if (params.halfContainerX - xi < params.H) {
-    force.x -= mirrorForceContrib(params.halfContainerX - xi, pressureI, densityI);
+  if (dTop < wallDist) {
+    force.y -= wallK * (wallDist - dTop);
   }
-  if (zi + params.halfContainerZ < params.H) {
-    force.z += mirrorForceContrib(zi + params.halfContainerZ, pressureI, densityI);
+  if (dBack < wallDist) {
+    force.z += wallK * (wallDist - dBack);
   }
-  if (params.halfContainerZ - zi < params.H) {
-    force.z -= mirrorForceContrib(params.halfContainerZ - zi, pressureI, densityI);
+  if (dFront < wallDist) {
+    force.z -= wallK * (wallDist - dFront);
   }
 
   forces[i] = vec4<f32>(force, 0.0);

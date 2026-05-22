@@ -15,7 +15,7 @@ import { AlgorithmPicker } from './ui/AlgorithmPicker';
 import { ControlPanel } from './ui/ControlPanel';
 import { StatsPanel } from './ui/StatsPanel';
 
-const CONTAINER_SIZE = new THREE.Vector3(6, 4, 6);
+const CONTAINER_SIZE = new THREE.Vector3(4, 4, 4);
 const FIELD_RESOLUTION = 100;
 
 const scene = new THREE.Scene();
@@ -219,7 +219,7 @@ async function init() {
     const dt = dtMs / 1000;
     lastTime = now;
 
-    const fixedDt = 0.004;
+    const fixedDt = 0.008;
     const substeps = config.paused ? 0 : Math.min(Math.ceil(dt / fixedDt), config.substepLimit);
 
     controls.update();

@@ -19,6 +19,8 @@ struct RenderParams {
 @group(0) @binding(0) var<uniform> params: RenderParams;
 @group(0) @binding(1) var densityTex: texture_3d<f32>;
 @group(0) @binding(2) var densitySampler: sampler;
+@group(0) @binding(3) var sandTex: texture_2d<f32>;
+@group(0) @binding(4) var sandSamp: sampler;
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -179,9 +181,15 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
   if (rg.r > 0.001) {
     avgImpact = rg.g / rg.r;
   }
-  let impactFoam = smoothstep(0.2, 1.5, avgImpact);
-  let topSurface = smoothstep(-0.1, 0.5, N.y);
-  let foam = clamp(impactFoam * topSurface, 0.0, 1.0);
+  let impactFoam = smoothstep(0.002, 0.1, avgImpact);
+  let topSurface = smoothstep(-0.2, 0.3, N.y);
+  let curvatureFoam = smoothstep(0.3, 0.8, gradLen / max(sampleDensity(hitPos), 0.01));
+
+  // Spray: thin fluid edges just above threshold with steep gradient
+  let thinness = 1.0 - smoothstep(params.threshold, params.threshold * 2.5, rg.r);
+  let spray = thinness * smoothstep(0.1, 0.5, gradLen) * topSurface;
+
+  let foam = clamp(max(max(impactFoam, curvatureFoam * 0.4), spray * 0.7) * topSurface, 0.0, 1.0);
 
   let cosTheta = max(dot(N, V), 0.0);
   let fresnel = 0.02 + 0.98 * pow(1.0 - cosTheta, 5.0);
@@ -197,11 +205,24 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
     }
   }
   if (depth == 0.0) { depth = tD - t; }
-  let depthFactor = 1.0 - exp(-depth * 1.5);
+  let depthFactor = 1.0 - exp(-depth * 2.5);
 
-  let absorption = vec3<f32>(1.5, 0.4, 0.3);
+  // Refraction — sample sand floor through water with Snell's law distortion
+  let refrDir = refract(rd, N, 1.0 / 1.33);
+  var floorCol = params.bgColor;
+  if (refrDir.y < -0.001) {
+    let tFloor = -hitPos.y / refrDir.y;
+    let floorPos = hitPos + refrDir * tFloor;
+    let floorUV = floorPos.xz * 0.5;
+    let sandRGB = textureSampleLevel(sandTex, sandSamp, floorUV, 0.0).rgb;
+    let floorNdotL = max(dot(vec3<f32>(0.0, 1.0, 0.0), L), 0.0);
+    floorCol = sandRGB * (0.55 + 0.45 * floorNdotL);
+  }
+
+  let absorption = vec3<f32>(3.0, 1.0, 0.4);
   let transmittance = exp(-absorption * depth);
-  var waterColor = transmittance * vec3<f32>(0.4, 0.85, 0.8) + (vec3<f32>(1.0) - transmittance) * vec3<f32>(0.02, 0.3, 0.4);
+  var waterColor = transmittance * vec3<f32>(0.2, 0.7, 0.65) + (vec3<f32>(1.0) - transmittance) * vec3<f32>(0.01, 0.15, 0.4);
+  waterColor = mix(floorCol, waterColor, depthFactor);
   waterColor = mix(waterColor, vec3<f32>(1.0), foam);
 
   let shadow = shadowMarch(hitPos + N * 0.03, L, 2.0);
@@ -211,7 +232,7 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
   let NdotV = max(dot(N, V), 0.001);
   let NdotH = max(dot(N, H), 0.0);
 
-  let roughness = mix(0.15, 0.6, foam);
+  let roughness = mix(0.06, 0.5, foam);
   let F0 = mix(0.02, 0.04, foam);
   let D = distributionGGX(NdotH, roughness);
   let G = geometrySmith(NdotV, NdotL, roughness);
@@ -223,11 +244,20 @@ fn fs_main(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
   let specular = params.lightColor * specBRDF * NdotL * shadow;
   var color = ambient + diffuse + specular;
 
-  let reflColor = mix(mix(params.bgColor, vec3<f32>(0.5, 0.8, 0.9), 0.4), params.bgColor, foam);
-  color = mix(color, reflColor, fresnel * 0.4);
+  // Sky gradient reflection
+  let reflDir = reflect(rd, N);
+  let skyT = clamp(reflDir.y * 0.5 + 0.5, 0.0, 1.0);
+  let horizon = vec3<f32>(0.85, 0.92, 0.97);
+  let zenith = vec3<f32>(0.4, 0.7, 0.95);
+  let reflColor = mix(horizon, zenith, skyT);
+  color = mix(color, reflColor, fresnel * 0.6);
+
+  // Foam edge glow
+  let foamGlow = smoothstep(0.0, 0.3, foam) * 0.15;
+  color += vec3<f32>(foamGlow);
 
   let mapped = acesFilm(color);
-  let alpha = clamp(depthFactor * 0.7 + 0.05 + foam, 0.0, 1.0);
+  let alpha = clamp(depthFactor * 0.75 + 0.3 + foam, 0.0, 1.0);
 
   return vec4<f32>(mapped, alpha);
 }

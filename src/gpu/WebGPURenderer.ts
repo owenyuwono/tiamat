@@ -25,6 +25,7 @@ export class WebGPURenderer {
   private fieldResolution: number;
 
   private waterPipeline: GPURenderPipeline;
+  private waterBindGroupLayout: GPUBindGroupLayout;
   private waterBindGroup: GPUBindGroup;
   private renderUniformBuffer: GPUBuffer;
   private renderUniformData: Float32Array;
@@ -149,7 +150,7 @@ export class WebGPURenderer {
     this.renderUniformData[16] = domainMin.x;
     this.renderUniformData[17] = domainMin.y;
     this.renderUniformData[18] = domainMin.z;
-    this.renderUniformData[19] = 0.55; // threshold
+    this.renderUniformData[19] = 0.3; // threshold
     // domainMax (offset 20)
     this.renderUniformData[20] = domainMax.x;
     this.renderUniformData[21] = domainMax.y;
@@ -170,15 +171,17 @@ export class WebGPURenderer {
 
     // Water render pipeline
     const waterModule = device.createShaderModule({ code: waterRaymarchShader });
-    const waterBindGroupLayout = device.createBindGroupLayout({
+    this.waterBindGroupLayout = device.createBindGroupLayout({
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '3d' } },
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
       ],
     });
     this.waterPipeline = device.createRenderPipeline({
-      layout: device.createPipelineLayout({ bindGroupLayouts: [waterBindGroupLayout] }),
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.waterBindGroupLayout] }),
       vertex: { module: waterModule, entryPoint: 'vs_main' },
       fragment: {
         module: waterModule,
@@ -195,11 +198,13 @@ export class WebGPURenderer {
       depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'always' },
     });
     this.waterBindGroup = device.createBindGroup({
-      layout: waterBindGroupLayout,
+      layout: this.waterBindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: this.renderUniformBuffer } },
         { binding: 1, resource: this.densityTextureView },
         { binding: 2, resource: this.linearSampler },
+        { binding: 3, resource: this.sandTextureView },
+        { binding: 4, resource: this.repeatSampler },
       ],
     });
 
@@ -323,8 +328,8 @@ export class WebGPURenderer {
       ],
     });
 
-    // Floor geometry — thin slab extending beyond container
-    const fhx = 3, fhz = 3, fd = 0.12;
+    // Floor geometry — matches container footprint
+    const fhx = containerSize.x / 2, fhz = containerSize.z / 2, fd = 0.12;
     const FA = [-fhx, 0, -fhz], FB = [fhx, 0, -fhz], FC = [fhx, 0, fhz], FD = [-fhx, 0, fhz];
     const FE = [-fhx, -fd, -fhz], FF = [fhx, -fd, -fhz], FG = [fhx, -fd, fhz], FH = [-fhx, -fd, fhz];
     const floorVerts: number[] = [];
@@ -434,12 +439,6 @@ export class WebGPURenderer {
     pass.setVertexBuffer(0, this.floorVertexBuffer);
     pass.draw(this.floorVertexCount);
 
-    // Draw wireframe
-    pass.setPipeline(this.wireframePipeline);
-    pass.setBindGroup(0, this.wireframeBindGroup);
-    pass.setVertexBuffer(0, this.wireframeVertexBuffer);
-    pass.draw(24);
-
     // Draw water (fullscreen triangle, alpha-blends over floor)
     pass.setPipeline(this.waterPipeline);
     pass.setBindGroup(0, this.waterBindGroup);
@@ -487,6 +486,17 @@ export class WebGPURenderer {
         { binding: 0, resource: { buffer: this.floorUniformBuffer } },
         { binding: 1, resource: this.sandTextureView },
         { binding: 2, resource: this.repeatSampler },
+      ],
+    });
+
+    this.waterBindGroup = this.device.createBindGroup({
+      layout: this.waterBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.renderUniformBuffer } },
+        { binding: 1, resource: this.densityTextureView },
+        { binding: 2, resource: this.linearSampler },
+        { binding: 3, resource: this.sandTextureView },
+        { binding: 4, resource: this.repeatSampler },
       ],
     });
   }

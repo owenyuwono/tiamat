@@ -240,6 +240,9 @@ export class SPHSimulation {
 
     const halfX = this.containerSize.x / 2;
     const halfZ = this.containerSize.z / 2;
+    const maxY = this.containerSize.y;
+    const wallDist = SPH.collisionRadius * 2;
+    const wallK = SPH.collisionStiffness * 2;
 
     const xsX = this.xsphX, xsY = this.xsphY, xsZ = this.xsphZ;
 
@@ -319,20 +322,19 @@ export class SPHSimulation {
         }
       }
 
-      const maxY = this.containerSize.y;
-      const mirrorForce = (dist: number, pI: number, rhoI: number) => {
-        const r = 2 * dist;
-        if (r >= H || r < 1e-6) return 0;
-        const hr = H - r;
-        return -mass * pI / rhoI * SPIKY_COEFF * hr * hr;
-      };
-
-      if (yi < H) fyi += mirrorForce(yi, pressi, rhoi);
-      if (maxY - yi < H) fyi -= mirrorForce(maxY - yi, pressi, rhoi);
-      if (xi + halfX < H) fxi += mirrorForce(xi + halfX, pressi, rhoi);
-      if (halfX - xi < H) fxi -= mirrorForce(halfX - xi, pressi, rhoi);
-      if (zi + halfZ < H) fzi += mirrorForce(zi + halfZ, pressi, rhoi);
-      if (halfZ - zi < H) fzi -= mirrorForce(halfZ - zi, pressi, rhoi);
+      // Wall repulsion
+      const dL = xi - (-halfX);
+      const dR = halfX - xi;
+      const dB = yi;
+      const dT = maxY - yi;
+      const dBk = zi - (-halfZ);
+      const dF = halfZ - zi;
+      if (dL < wallDist) fxi += wallK * (wallDist - dL);
+      if (dR < wallDist) fxi -= wallK * (wallDist - dR);
+      if (dB < wallDist) fyi += wallK * (wallDist - dB);
+      if (dT < wallDist) fyi -= wallK * (wallDist - dT);
+      if (dBk < wallDist) fzi += wallK * (wallDist - dBk);
+      if (dF < wallDist) fzi -= wallK * (wallDist - dF);
 
       fx[i] = fxi;
       fy[i] = fyi;
@@ -359,11 +361,12 @@ export class SPHSimulation {
       this.velY[i] += this.forceY[i] * invRho * dt;
       this.velZ[i] += this.forceZ[i] * invRho * dt;
 
-      const drag = 1.0 - 1.5 * dt;
-      this.velX[i] *= drag;
-      this.velY[i] *= drag;
-      this.velZ[i] *= drag;
+      // XSPH velocity smoothing
+      this.velX[i] += eps * this.xsphX[i];
+      this.velY[i] += eps * this.xsphY[i];
+      this.velZ[i] += eps * this.xsphZ[i];
 
+      // Clamp velocity
       const speed2 = this.velX[i] * this.velX[i] + this.velY[i] * this.velY[i] + this.velZ[i] * this.velZ[i];
       if (speed2 > maxV * maxV) {
         const s = maxV / Math.sqrt(speed2);
@@ -372,9 +375,9 @@ export class SPHSimulation {
         this.velZ[i] *= s;
       }
 
-      this.posX[i] += (this.velX[i] + eps * this.xsphX[i]) * dt;
-      this.posY[i] += (this.velY[i] + eps * this.xsphY[i]) * dt;
-      this.posZ[i] += (this.velZ[i] + eps * this.xsphZ[i]) * dt;
+      this.posX[i] += this.velX[i] * dt;
+      this.posY[i] += this.velY[i] * dt;
+      this.posZ[i] += this.velZ[i] * dt;
 
       if (this.posX[i] < -halfX) { this.posX[i] = -halfX; this.velX[i] *= damp; }
       if (this.posX[i] > halfX) { this.posX[i] = halfX; this.velX[i] *= damp; }
