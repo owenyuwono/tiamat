@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import type { GPUProfiler } from './GPUProfiler';
 import bufferToTextureShader from './shaders/bufferToTexture.wgsl?raw';
-import wireframeShader from './shaders/wireframe.wgsl?raw';
 import waterRaymarchShader from './shaders/waterRaymarch.wgsl?raw';
 import floorShader from './shaders/floor.wgsl?raw';
 
@@ -30,11 +29,6 @@ export class WebGPURenderer {
   private renderUniformBuffer: GPUBuffer;
   private renderUniformData: Float32Array;
 
-  private wireframePipeline: GPURenderPipeline;
-  private wireframeBindGroup: GPUBindGroup;
-  private wireframeVertexBuffer: GPUBuffer;
-  private wireframeUniformBuffer: GPUBuffer;
-  private wireframeUniformData: Float32Array;
 
   private floorPipeline: GPURenderPipeline;
   private floorBindGroupLayout: GPUBindGroupLayout;
@@ -208,77 +202,6 @@ export class WebGPURenderer {
       ],
     });
 
-    // Wireframe pipeline
-    const wireModule = device.createShaderModule({ code: wireframeShader });
-    this.wireframeUniformData = new Float32Array(20);
-    // color (0x8090a0)
-    this.wireframeUniformData[16] = 0x80 / 255;
-    this.wireframeUniformData[17] = 0x90 / 255;
-    this.wireframeUniformData[18] = 0xa0 / 255;
-    this.wireframeUniformData[19] = 1.0;
-
-    this.wireframeUniformBuffer = device.createBuffer({
-      size: 80,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    const wireBindGroupLayout = device.createBindGroupLayout({
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
-      ],
-    });
-    this.wireframePipeline = device.createRenderPipeline({
-      layout: device.createPipelineLayout({ bindGroupLayouts: [wireBindGroupLayout] }),
-      vertex: {
-        module: wireModule,
-        entryPoint: 'vs_main',
-        buffers: [{
-          arrayStride: 12,
-          attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }],
-        }],
-      },
-      fragment: {
-        module: wireModule,
-        entryPoint: 'fs_main',
-        targets: [{ format: this.format }],
-      },
-      primitive: { topology: 'line-list' },
-      depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
-    });
-    this.wireframeBindGroup = device.createBindGroup({
-      layout: wireBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.wireframeUniformBuffer } },
-      ],
-    });
-
-    // Wireframe vertex buffer — 12 edges of a box centered at (0, cy, 0)
-    const hx = containerSize.x / 2, hy = containerSize.y, hz = containerSize.z / 2;
-    const lo = [-hx, 0, -hz] as const;
-    const hi = [hx, hy, hz] as const;
-    const edges = [
-      // bottom
-      lo[0],lo[1],lo[2], hi[0],lo[1],lo[2],
-      hi[0],lo[1],lo[2], hi[0],lo[1],hi[2],
-      hi[0],lo[1],hi[2], lo[0],lo[1],hi[2],
-      lo[0],lo[1],hi[2], lo[0],lo[1],lo[2],
-      // top
-      lo[0],hi[1],lo[2], hi[0],hi[1],lo[2],
-      hi[0],hi[1],lo[2], hi[0],hi[1],hi[2],
-      hi[0],hi[1],hi[2], lo[0],hi[1],hi[2],
-      lo[0],hi[1],hi[2], lo[0],hi[1],lo[2],
-      // verticals
-      lo[0],lo[1],lo[2], lo[0],hi[1],lo[2],
-      hi[0],lo[1],lo[2], hi[0],hi[1],lo[2],
-      hi[0],lo[1],hi[2], hi[0],hi[1],hi[2],
-      lo[0],lo[1],hi[2], lo[0],hi[1],hi[2],
-    ];
-    this.wireframeVertexBuffer = device.createBuffer({
-      size: edges.length * 4,
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(this.wireframeVertexBuffer, 0, new Float32Array(edges));
-
     // Floor pipeline
     const floorModule = device.createShaderModule({ code: floorShader });
     this.floorUniformData = new Float32Array(20);
@@ -401,14 +324,12 @@ export class WebGPURenderer {
 
     this.device.queue.writeBuffer(this.renderUniformBuffer, 0, this.renderUniformData);
 
-    // Update wireframe + floor uniforms (shared viewProjection matrix)
+    // Update floor uniforms (viewProjection matrix)
     this._vp.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     const vpE = this._vp.elements;
     for (let i = 0; i < 16; i++) {
-      this.wireframeUniformData[i] = vpE[i];
       this.floorUniformData[i] = vpE[i];
     }
-    this.device.queue.writeBuffer(this.wireframeUniformBuffer, 0, this.wireframeUniformData);
     this.device.queue.writeBuffer(this.floorUniformBuffer, 0, this.floorUniformData);
 
     // Render pass
@@ -518,8 +439,6 @@ export class WebGPURenderer {
     this.sandTexture.destroy();
     this.depthTexture.destroy();
     this.renderUniformBuffer.destroy();
-    this.wireframeUniformBuffer.destroy();
-    this.wireframeVertexBuffer.destroy();
     this.floorUniformBuffer.destroy();
     this.floorVertexBuffer.destroy();
   }
