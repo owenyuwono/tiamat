@@ -293,8 +293,7 @@ async function init() {
     lastTime = now;
     elapsedTime += dt;
 
-    const fixedDt = 0.008;
-    const substeps = config.paused ? 0 : Math.min(Math.ceil(dt / fixedDt), config.substepLimit);
+    const substeps = config.paused ? 0 : (gpuCompute ? gpuCompute.getCflSubsteps() : Math.min(Math.ceil(dt / 0.005), 3));
 
     controls.update();
     camera.updateMatrixWorld();
@@ -325,7 +324,7 @@ async function init() {
       await device.queue.onSubmittedWorkDone();
 
       if (!config.paused) {
-        rigidBodies.integrate(substeps, fixedDt);
+        rigidBodies.integrate(substeps, gpuCompute ? gpuCompute.getCflDt() : 0.005);
       }
 
       await profiler?.readback();
@@ -344,7 +343,7 @@ async function init() {
       glRenderer.render(scene, camera);
     }
 
-    statsPanel.update(dtMs, profiler?.getSnapshot() ?? null, config.particleCount, substeps);
+    statsPanel.update(dtMs, profiler?.getSnapshot() ?? null, config.particleCount, substeps, gpuCompute?.getCflStiffness(), gpuCompute?.getCflDt());
 
     requestAnimationFrame(animate);
   }

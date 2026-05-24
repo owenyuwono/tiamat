@@ -5,11 +5,10 @@ export type Algorithm = 'sph' | 'flip' | 'euler';
 export interface SimConfig {
   algorithm: Algorithm;
   particleCount: number;
-  stiffness: number;
+  stiffnessMultiplier: number;
   viscosity: number;
   gravity: number;
   boundaryDamping: number;
-  maxVelocity: number;
   xsphEpsilon: number;
   surfaceTension: number;
   splatRadius: number;
@@ -28,11 +27,10 @@ export function createDefaultConfig(): SimConfig {
   return {
     algorithm: 'sph',
     particleCount: DEFAULT_PARTICLE_COUNT,
-    stiffness: SPH.stiffness,
+    stiffnessMultiplier: 1.0,
     viscosity: SPH.viscosity,
     gravity: SPH.gravity,
     boundaryDamping: SPH.boundaryDamping,
-    maxVelocity: SPH.maxVelocity,
     xsphEpsilon: SPH.xsphEpsilon,
     surfaceTension: SPH.surfaceTension,
     splatRadius: 0.05,

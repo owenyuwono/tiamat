@@ -341,7 +341,6 @@ export class SPHSimulation {
     const halfZ = this.containerSize.z / 2;
     const maxY = this.containerSize.y;
     const damp = SPH.boundaryDamping;
-    const maxV = SPH.maxVelocity;
 
     const eps = SPH.xsphEpsilon;
 
@@ -351,15 +350,13 @@ export class SPHSimulation {
       this.velY[i] += this.forceY[i] * invRho * dt;
       this.velZ[i] += this.forceZ[i] * invRho * dt;
 
-      // XSPH velocity smoothing
       this.velX[i] += eps * this.xsphX[i];
       this.velY[i] += eps * this.xsphY[i];
       this.velZ[i] += eps * this.xsphZ[i];
 
-      // Clamp velocity
       const speed2 = this.velX[i] * this.velX[i] + this.velY[i] * this.velY[i] + this.velZ[i] * this.velZ[i];
-      if (speed2 > maxV * maxV) {
-        const s = maxV / Math.sqrt(speed2);
+      if (speed2 > 10000) {
+        const s = 100 / Math.sqrt(speed2);
         this.velX[i] *= s;
         this.velY[i] *= s;
         this.velZ[i] *= s;

@@ -176,24 +176,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     force += viscMag * (obsVel - velI);
   }
 
-  // Wall boundary spring forces — geometry-based, independent of pressure
-  let bDist = params.H * 2.0;
-  let bStiff = 15000.0;
-
-  let dFloor = posI.y;
-  let dCeil  = params.containerMaxY - posI.y;
-  let dNegX  = posI.x + params.halfContainerX;
-  let dPosX  = params.halfContainerX - posI.x;
-  let dNegZ  = posI.z + params.halfContainerZ;
-  let dPosZ  = params.halfContainerZ - posI.z;
-
-  if (dFloor < bDist) { let q = 1.0 - dFloor / bDist; force.y += bStiff * q * q; }
-  if (dCeil  < bDist) { let q = 1.0 - dCeil  / bDist; force.y -= bStiff * q * q; }
-  if (dNegX  < bDist) { let q = 1.0 - dNegX  / bDist; force.x += bStiff * q * q; }
-  if (dPosX  < bDist) { let q = 1.0 - dPosX  / bDist; force.x -= bStiff * q * q; }
-  if (dNegZ  < bDist) { let q = 1.0 - dNegZ  / bDist; force.z += bStiff * q * q; }
-  if (dPosZ  < bDist) { let q = 1.0 - dPosZ  / bDist; force.z -= bStiff * q * q; }
-
   forces[i] = vec4<f32>(force, 0.0);
   xsph[i] = vec4<f32>(xsphAcc, trappedAir);
 }

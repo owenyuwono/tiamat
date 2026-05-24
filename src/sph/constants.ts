@@ -6,7 +6,6 @@ export const SPH = {
   viscosity: 2.5,
   gravity: -9.81,
   boundaryDamping: -0.3,
-  maxVelocity: 5.0,
   collisionRadius: 0.035,
   collisionStiffness: 8000,
   xsphEpsilon: 0.05,

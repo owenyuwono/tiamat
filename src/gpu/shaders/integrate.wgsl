@@ -75,8 +75,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   vel *= 1.0 - 0.5 * params.dt;
 
   let speed2 = dot(vel, vel);
-  if (speed2 > params.maxVelocity * params.maxVelocity) {
-    vel *= params.maxVelocity / sqrt(speed2);
+  if (speed2 > 10000.0) {
+    vel *= 100.0 / sqrt(speed2);
   }
 
   pos += vel * params.dt;
