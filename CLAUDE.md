@@ -108,27 +108,27 @@ All three implement the same interface: `encodeStep()`, `uploadInitialPositions(
 
 ## Tuning knobs
 
-- `constants.ts` — base stiffness (150, auto-scaled by CFL), viscosity (2.5), XSPH epsilon (0.05), surface tension (0.2), boundary damping (-0.3), Tait gamma (7)
-- `SimConfig.ts` defaults — particle count (100k), stiffnessMultiplier (1.0), splat radius (0.05), density threshold (0.3), render scale (0.5)
+- `constants.ts` — stiffness (150), viscosity (2.5), XSPH epsilon (0.15), surface tension (0.2), boundary damping (-0.5), Tait gamma (7)
+- `SimConfig.ts` defaults — particle count (100k), splat radius (0.10), density threshold (0.65), render scale (0.5), fixed dt (0.004), max substeps (6), lightEnabled toggle
 - `main.ts` — container size (4×4×4), field resolution (100)
 - `waterRaymarch.wgsl` — foam thresholds (`smoothstep(0.002, 0.1)` for impact, `smoothstep(0.3, 0.8)` for curvature), step size (0.025), iterations (400), absorption `vec3(3.0, 1.0, 0.4)`, GGX roughness (0.06 water, 0.5 foam), shadow extinction (3.0), Fresnel reflection strength (0.6), alpha floor (0.3)
 - `splatDensity.wgsl` — foam signal weights: `impact*5 + trappedAir*3 + kineticSurface*0.5`
 - `clearDensityField.wgsl` — foam decay rate (per frame, controls foam persistence half-life)
-- `computeForces.wgsl` — mirror boundary forces (pressure-based), trapped-air potential in `xsph.w`
+- `computeForces.wgsl` — mirror boundary forces (pressure-based, replaces old wall springs), trapped-air potential in `xsph.w`
 - `integrate.wgsl` — velocity damping (`1.0 - 0.5 * dt`), spray emission threshold (emissionPotential > 1.5), bubble emission (trappedAir > 2.0, densityRatio > 1.2)
 - `advectSpray.wgsl` — spray gravity (-15), bubble buoyancy (0.4× |gravity|), bubble foam trail (0.3 per frame), spray→foam re-entry (speed×2), bubble pop foam (2.0)
 - `sprayRender.wgsl` / `WebGPURenderer.ts` — spray point size, alpha falloff
 
 ## SPH parameter coupling — critical constraints
 
-**CFL-based adaptive stiffness and timestep**: `GPUCompute.computeCFL()` auto-computes Tait stiffness B and dt from particle count and container geometry. The formula targets ≤10% density compression at hydrostatic equilibrium. This eliminates the old maxVelocity clamp — velocities are naturally bounded when B and dt satisfy the CFL condition. The stiffnessMultiplier slider (default 1.0) scales the auto-computed B.
+**Do not change SPH physics parameters independently.** Wall springs, XSPH, dt, boundary damping, stiffness, and MAX_PER_CELL are tightly coupled. Changing one without revalidating the others causes instability. The current parameter set (commit `7c79d3f` baseline + gentle velocity damping) was validated as a working unit.
 
-Key constraints:
-- **Stiffness scales with particle count**: more particles → taller settled column → higher hydrostatic pressure → higher B needed. `B = max(150, ρ₀·g·h / (1.1^γ - 1))` where h is the estimated column height
-- **dt derived from CFL**: `dt = 0.4 · H / (c_s + 0.1)` where `c_s = sqrt(γ·B/ρ₀)`. Substeps = `ceil(frameDt / cflDt)`, capped at 16
-- **Mirror boundary forces only**: wall springs removed — they double-counted with mirror pressure forces and caused oscillation. `computeForces.wgsl` uses mirror-particle pressure at all 6 walls (same approach as `computeDensity.wgsl`)
-- **MAX_PER_CELL=32 and tableSize=N*3**: provides adequate neighbor coverage. May cause neighbor-miss artifacts at very high particle counts — validate settling behavior if increasing beyond 360k
-- **Velocity damping**: `vel *= 1.0 - 0.5 * dt` in integrate.wgsl
+Specific constraints discovered through debugging:
+- **Mirror boundary forces replaced wall springs**: `computeForces.wgsl` now uses pressure-based mirror forces at all 6 walls (same approach as `computeDensity.wgsl` mirror particles). The old wall springs are removed. Mirror forces produce smoother boundary behavior than spring forces
+- **XSPH on position**: XSPH correction is now applied to position update (`pos += (vel + eps * xsph) * dt`) rather than velocity. This is the Monaghan formulation. Current ε=0.15 (from SimConfig xsphEpsilon)
+- **dt must be consistent**: `main.ts` fixedDt and `GPUCompute.ts` fixedDt must match (both 0.008). A mismatch halves the effective damping and changes substep count
+- **MAX_PER_CELL=16 and tableSize=N*2**: reduced from 32/3x to save memory (~17MB vs ~67MB at 100k). May cause neighbor-miss artifacts at very high particle counts — validate settling behavior if increasing beyond 360k
+- **Velocity damping**: `vel *= 1.0 - 1.5 * dt` — higher than original (was 0.5) to help settling with the new mirror forces
 
 ## Known issues
 
@@ -140,6 +140,6 @@ Key constraints:
 
 - Container is fixed at 4×4×4. At 100k particles the block fills ~51% of the container. Higher counts pack denser
 - Raymarching iterations (400) × step size (0.025) = 10 units, covers the 4×4×4 diagonal (√48 ≈ 6.93) with margin
-- SPH cell entries buffer: `nextPowerOfTwo(N * 3) * 32 * 4` bytes
-- CFL-based stiffness: at 100k B≈13k (4 substeps), at 200k B≈27k (6 substeps), at 360k B≈41k (7 substeps). More substeps = more GPU compute per frame
+- SPH cell entries buffer: `nextPowerOfTwo(N * 2) * 16 * 4` bytes. At 100k ≈ 17MB — much reduced from old settings
+- Stiffness of 50 (original) causes supersonic compression at high particle counts — increased to 150 for stability
 - Raymarching is the main GPU bottleneck on laptops — fullscreen shader runs 400 steps × multiple texture samples per hit pixel. Reducing render scale or step count are the main perf levers

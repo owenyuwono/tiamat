@@ -73,10 +73,6 @@ export class GPUCompute {
   private paramsU32: Uint32Array;
   private zeroVelocities: Float32Array;
 
-  private cflStiffness: number;
-  private cflDt: number;
-  private cflSubsteps: number;
-
   static async create(
     particleCount: number,
     containerSize: THREE.Vector3,
@@ -119,11 +115,6 @@ export class GPUCompute {
     this.tableSize = nextPowerOfTwo(particleCount * 3);
     this.fieldResolution = fieldResolution;
     this.fieldSize = fieldResolution * fieldResolution * fieldResolution * 2 * 4;
-
-    const cfl = GPUCompute.computeCFL(particleCount, containerSize);
-    this.cflStiffness = cfl.stiffness;
-    this.cflDt = cfl.dt;
-    this.cflSubsteps = cfl.substeps;
 
     const N = particleCount;
 
@@ -221,16 +212,16 @@ export class GPUCompute {
     this.paramsF32[5] = H2;
     this.paramsF32[6] = mass;
     this.paramsF32[7] = SPH.restDensity;
-    this.paramsF32[8] = this.cflStiffness;
+    this.paramsF32[8] = SPH.stiffness;
     this.paramsF32[9] = SPH.viscosity;
     this.paramsF32[10] = SPH.gravity;
     this.paramsF32[11] = SPH.boundaryDamping;
-    this.paramsF32[12] = 0.0;
+    this.paramsF32[12] = SPH.maxVelocity;
     this.paramsF32[13] = SPH.collisionRadius;
     this.paramsF32[14] = SPH.collisionStiffness;
     this.paramsF32[15] = SPH.xsphEpsilon;
     this.paramsF32[16] = SPH.surfaceTension;
-    this.paramsF32[17] = this.cflDt;
+    this.paramsF32[17] = 0.008;
     this.paramsF32[18] = 315 / (64 * Math.PI * Math.pow(H, 9));
     this.paramsF32[19] = -45 / (Math.PI * Math.pow(H, 6));
     this.paramsF32[20] = 45 / (Math.PI * Math.pow(H, 6));
@@ -455,29 +446,6 @@ export class GPUCompute {
   getSprayBuffer(): GPUBuffer { return this.sprayBuffer; }
   getObstaclesUniformBuffer(): GPUBuffer { return this.obstaclesUniformBuffer; }
   getFieldResolution(): number { return this.fieldResolution; }
-  getCflDt(): number { return this.cflDt; }
-  getCflSubsteps(): number { return this.cflSubsteps; }
-  getCflStiffness(): number { return this.cflStiffness; }
-
-  static computeCFL(particleCount: number, containerSize: THREE.Vector3): { stiffness: number; dt: number; substeps: number } {
-    const H = SPH.smoothingRadius;
-    const spacing = H * 0.5;
-    const mass = SPH.restDensity * spacing * spacing * spacing;
-    const baseArea = containerSize.x * containerSize.z;
-    const packing = 0.6;
-    const columnHeight = Math.min(
-      particleCount * mass / (SPH.restDensity * baseArea * packing),
-      containerSize.y,
-    );
-    const hydroPressure = SPH.restDensity * Math.abs(SPH.gravity) * columnHeight;
-    const compressionTarget = 1.1;
-    const B = Math.max(SPH.stiffness, hydroPressure / (compressionTarget ** SPH.taitGamma - 1));
-    const soundSpeed = Math.sqrt(SPH.taitGamma * B / SPH.restDensity);
-    const cflDt = 0.4 * H / (soundSpeed + 0.1);
-    const frameDt = 1 / 60;
-    const substeps = Math.min(Math.ceil(frameDt / cflDt), 16);
-    return { stiffness: B, dt: cflDt, substeps };
-  }
   getPositionsBuffer(): GPUBuffer { return this.positionsBuffer; }
   getDensityPressureBuffer(): GPUBuffer { return this.densityPressureBuffer; }
 
@@ -489,12 +457,13 @@ export class GPUCompute {
   }
 
   encodeStep(encoder: GPUCommandEncoder, substeps: number, profiler?: GPUProfiler | null) {
-    this.paramsF32[17] = this.cflDt;
+    const fixedDt = 0.008;
+    this.paramsF32[17] = fixedDt;
     this.device.queue.writeBuffer(this.paramsBuffer, 0, this.paramsArrayBuffer);
 
     const sprayParamsData = new Float32Array(12);
     const sprayParamsU32 = new Uint32Array(sprayParamsData.buffer);
-    sprayParamsData[0] = this.cflDt * substeps;     // dt
+    sprayParamsData[0] = fixedDt * substeps;     // dt
     sprayParamsData[1] = -15.0;                  // gravity
     sprayParamsU32[2] = SPRAY_MAX;               // maxCount
     sprayParamsU32[3] = this.fieldResolution;    // fieldResolution
@@ -592,10 +561,11 @@ export class GPUCompute {
   }
 
   updateSimConfig(config: SimConfig) {
-    this.paramsF32[8] = this.cflStiffness * config.stiffnessMultiplier;
+    this.paramsF32[8] = config.stiffness;
     this.paramsF32[9] = config.viscosity;
     this.paramsF32[10] = config.gravity;
     this.paramsF32[11] = config.boundaryDamping;
+    this.paramsF32[12] = config.maxVelocity;
     this.paramsF32[15] = config.xsphEpsilon;
     this.paramsF32[16] = config.surfaceTension;
     this.paramsF32[30] = config.splatRadius * config.splatRadius;

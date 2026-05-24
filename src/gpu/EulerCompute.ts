@@ -165,7 +165,7 @@ export class EulerCompute {
     this.paramsF32[9] = SPH.viscosity;
     this.paramsF32[10] = SPH.gravity;
     this.paramsF32[11] = SPH.boundaryDamping;
-    this.paramsF32[12] = 0.0;
+    this.paramsF32[12] = SPH.maxVelocity;
     this.paramsF32[13] = SPH.collisionRadius;
     this.paramsF32[14] = SPH.collisionStiffness;
     this.paramsF32[15] = SPH.xsphEpsilon;
@@ -529,10 +529,11 @@ export class EulerCompute {
   }
 
   updateSimConfig(config: SimConfig) {
-    this.paramsF32[8] = config.stiffnessMultiplier * SPH.stiffness;
+    this.paramsF32[8] = config.stiffness;
     this.paramsF32[9] = config.viscosity;
     this.paramsF32[10] = config.gravity;
     this.paramsF32[11] = config.boundaryDamping;
+    this.paramsF32[12] = config.maxVelocity;
     this.paramsF32[15] = config.xsphEpsilon;
     this.paramsF32[16] = config.surfaceTension;
     this.paramsF32[30] = config.splatRadius * config.splatRadius;

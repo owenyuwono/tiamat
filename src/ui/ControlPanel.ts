@@ -20,10 +20,11 @@ export interface ControlPanelCallbacks {
 
 const PHYSICS_SLIDERS: SliderDef[] = [
   { key: 'gravity', label: 'Gravity', min: -20, max: 0, step: 0.1 },
-  { key: 'stiffnessMultiplier', label: 'Stiffness Scale', min: 0.5, max: 2.0, step: 0.1 },
+  { key: 'stiffness', label: 'Stiffness', min: 10, max: 500, step: 5 },
   { key: 'viscosity', label: 'Viscosity', min: 0, max: 10, step: 0.1 },
   { key: 'surfaceTension', label: 'Surface Tension', min: 0, max: 2, step: 0.05 },
   { key: 'boundaryDamping', label: 'Wall Damping', min: -1, max: 0, step: 0.05 },
+  { key: 'maxVelocity', label: 'Max Velocity', min: 1, max: 20, step: 0.5 },
   { key: 'xsphEpsilon', label: 'XSPH Epsilon', min: 0, max: 0.5, step: 0.01 },
 ];
 

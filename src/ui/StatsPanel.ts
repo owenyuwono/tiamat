@@ -17,8 +17,6 @@ export class StatsPanel {
   private gpuTotalRow: HTMLDivElement;
   private gpuTotalValueEl: HTMLSpanElement;
   private passRows: PassRow[] = [];
-  private stiffnessEl: HTMLSpanElement;
-  private cflDtEl: HTMLSpanElement;
   private smoothedFps = 60;
   private smoothedFrameTime = 16;
 
@@ -30,16 +28,12 @@ export class StatsPanel {
     this.frameTimeEl = document.createElement('span');
     this.particlesEl = document.createElement('span');
     this.substepsEl = document.createElement('span');
-    this.stiffnessEl = document.createElement('span');
-    this.cflDtEl = document.createElement('span');
 
     this.el.appendChild(this.buildRow('FPS', this.fpsEl));
     this.el.appendChild(this.buildRow('Frame', this.frameTimeEl));
     this.el.appendChild(this.buildSeparator());
     this.el.appendChild(this.buildRow('Particles', this.particlesEl));
     this.el.appendChild(this.buildRow('Substeps', this.substepsEl));
-    this.el.appendChild(this.buildRow('Stiffness', this.stiffnessEl));
-    this.el.appendChild(this.buildRow('CFL dt', this.cflDtEl));
 
     this.gpuSeparator = this.buildSeparator();
     this.gpuSeparator.style.display = 'none';
@@ -96,7 +90,7 @@ export class StatsPanel {
     }
   }
 
-  update(dtMs: number, gpuSnapshot: GPUTimingSnapshot | null, particleCount: number, substeps: number, cflStiffness?: number, cflDt?: number) {
+  update(dtMs: number, gpuSnapshot: GPUTimingSnapshot | null, particleCount: number, substeps: number) {
     if (dtMs > 0) {
       const instantFps = 1000 / dtMs;
       this.smoothedFps += (instantFps - this.smoothedFps) * 0.2;
@@ -107,8 +101,6 @@ export class StatsPanel {
     this.frameTimeEl.textContent = this.smoothedFrameTime.toFixed(1) + ' ms';
     this.particlesEl.textContent = particleCount.toLocaleString();
     this.substepsEl.textContent = String(substeps);
-    this.stiffnessEl.textContent = cflStiffness != null ? cflStiffness.toFixed(0) : '—';
-    this.cflDtEl.textContent = cflDt != null ? (cflDt * 1000).toFixed(2) + ' ms' : '—';
 
     if (!gpuSnapshot) {
       this.gpuSeparator.style.display = 'none';
