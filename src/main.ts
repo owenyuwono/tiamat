@@ -13,8 +13,8 @@ import { createDefaultConfig } from './ui/SimConfig';
 import type { Algorithm } from './ui/SimConfig';
 import { AlgorithmPicker } from './ui/AlgorithmPicker';
 import { ControlPanel } from './ui/ControlPanel';
-import { StatsPanel } from './ui/StatsPanel';
 import { RigidBodySystem } from './gpu/RigidBodySystem';
+import { StatsPanel } from './ui/StatsPanel';
 
 const CONTAINER_SIZE = new THREE.Vector3(4, 4, 4);
 const FIELD_RESOLUTION = 100;
@@ -203,44 +203,7 @@ async function init() {
     );
   }
 
-  async function reinitGPU(count: number) {
-    if (!gpuCompute || !webgpuRenderer) return;
-    const device = gpuCompute.getDevice();
-
-    webgpuRenderer.invalidateDebugBindings();
-    gpuCompute.dispose();
-    if (flipCompute) flipCompute.dispose();
-    if (eulerCompute) eulerCompute.dispose();
-
-    gpuCompute = new GPUCompute(
-      device, count, containerSize, fieldResolution, domainMin, domainMax, config.splatRadius,
-    );
-    flipCompute = new FLIPCompute(
-      device, count, containerSize, fieldResolution, domainMin, domainMax, config.splatRadius,
-    );
-    eulerCompute = new EulerCompute(
-      device, count, containerSize, fieldResolution, domainMin, domainMax, config.splatRadius,
-    );
-    if (config.algorithm === 'sph') activeCompute = gpuCompute;
-    else if (config.algorithm === 'flip') activeCompute = flipCompute;
-    else activeCompute = eulerCompute;
-
-    sim = generatePositions(count);
-    activeCompute.uploadInitialPositions(savedPosX, savedPosY, savedPosZ);
-
-    webgpuRenderer.rebindComputeBuffers(
-      activeCompute.getDensityFieldBuffer(),
-      activeCompute.getParamsBuffer(),
-      gpuCompute.getSprayBuffer(),
-      gpuCompute.getObstaclesUniformBuffer(),
-    );
-    webgpuRenderer.rebindDebugBuffers(gpuCompute.getPositionsBuffer(), gpuCompute.getDensityPressureBuffer(), count);
-
-    profiler?.setParticleCount(count);
-  }
-
   const isGPU = !!gpuCompute;
-  const statsPanel = new StatsPanel();
 
   const algorithmPicker = isGPU
     ? new AlgorithmPicker(config.algorithm, (algo) => {
@@ -250,7 +213,6 @@ async function init() {
     : undefined;
 
   new ControlPanel(config, {
-    gpuMode: isGPU,
     algorithmPicker,
     onReset: () => {
       if (activeCompute) {
@@ -258,14 +220,6 @@ async function init() {
         activeCompute.resetVelocities();
       }
       rigidBodies.reset();
-    },
-    onRenderScaleChange: (scale: number) => {
-      if (webgpuRenderer) {
-        webgpuRenderer.resize(window.innerWidth, window.innerHeight, Math.min(window.devicePixelRatio, 2), scale);
-      }
-    },
-    onParticleCountChange: (count: number) => {
-      reinitGPU(count);
     },
   });
 
@@ -280,6 +234,7 @@ async function init() {
     }
   });
 
+  const statsPanel = new StatsPanel();
   const rendererSize = new THREE.Vector2();
   const lightRef = new THREE.DirectionalLight(0xffffff, 1.0);
   lightRef.position.set(5, 8, 5);
@@ -300,9 +255,9 @@ async function init() {
     camera.updateMatrixWorld();
 
     if (activeCompute && webgpuRenderer) {
-      webgpuRenderer.setLightEnabled(config.lightEnabled);
+      webgpuRenderer.setLightEnabled(true);
       webgpuRenderer.setFxaaEnabled(config.fxaaEnabled);
-      webgpuRenderer.setDebugMode(config.debugMode);
+      webgpuRenderer.setDebugMode(false);
       activeCompute.updateSimConfig(config);
       webgpuRenderer.setThreshold(config.threshold);
 
@@ -329,6 +284,7 @@ async function init() {
       }
 
       await profiler?.readback();
+      statsPanel.update();
     } else if (glRenderer && waterRenderer) {
       if (!config.paused) {
         sim.step(dt);
@@ -342,9 +298,8 @@ async function init() {
         particles.count, lightRef, camera, rendererSize
       );
       glRenderer.render(scene, camera);
+      statsPanel.update();
     }
-
-    statsPanel.update(dtMs, profiler?.getSnapshot() ?? null, config.particleCount, substeps);
 
     requestAnimationFrame(animate);
   }

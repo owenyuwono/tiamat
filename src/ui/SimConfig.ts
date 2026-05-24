@@ -17,9 +17,7 @@ export interface SimConfig {
   renderScale: number;
   paused: boolean;
   substepLimit: number;
-  lightEnabled: boolean;
   fxaaEnabled: boolean;
-  debugMode: boolean;
 }
 
 export const DEFAULT_PARTICLE_COUNT = 100000;
@@ -35,13 +33,11 @@ export function createDefaultConfig(): SimConfig {
     maxVelocity: SPH.maxVelocity,
     xsphEpsilon: SPH.xsphEpsilon,
     surfaceTension: SPH.surfaceTension,
-    splatRadius: 0.05,
-    threshold: 0.3,
-    renderScale: 0.5,
+    splatRadius: 0.04,
+    threshold: 0.1,
+    renderScale: 1.0,
     paused: false,
     substepLimit: 3,
-    lightEnabled: true,
     fxaaEnabled: true,
-    debugMode: false,
   };
 }
