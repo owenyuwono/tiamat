@@ -41,6 +41,49 @@ struct Params {
 
 const FIXED_POINT_SCALE: u32 = 10000u;
 
+fn splatAt(splatPos: vec3<f32>, foamSignal: f32) {
+  let res = i32(params.fieldResolution);
+  let resM1 = res - 1;
+  let r = i32(params.splatRadiusCells);
+
+  let cx = i32(floor((splatPos.x - params.fieldDomainMinX) * params.fieldInvCellSize));
+  let cy = i32(floor((splatPos.y - params.fieldDomainMinY) * params.fieldInvCellSize));
+  let cz = i32(floor((splatPos.z - params.fieldDomainMinZ) * params.fieldInvCellSize));
+
+  let x0 = max(0, cx - r);
+  let x1 = min(resM1, cx + r);
+  let y0 = max(0, cy - r);
+  let y1 = min(resM1, cy + r);
+  let z0 = max(0, cz - r);
+  let z1 = min(resM1, cz + r);
+
+  for (var iz = z0; iz <= z1; iz++) {
+    let vz = (f32(iz) + 0.5) * params.fieldCellSize + params.fieldDomainMinZ - splatPos.z;
+    let vz2 = vz * vz;
+    if (vz2 >= params.splatRadius2) {
+      continue;
+    }
+    for (var iy = y0; iy <= y1; iy++) {
+      let vy = (f32(iy) + 0.5) * params.fieldCellSize + params.fieldDomainMinY - splatPos.y;
+      let vyz2 = vy * vy + vz2;
+      if (vyz2 >= params.splatRadius2) {
+        continue;
+      }
+      for (var ix = x0; ix <= x1; ix++) {
+        let vx = (f32(ix) + 0.5) * params.fieldCellSize + params.fieldDomainMinX - splatPos.x;
+        let dist2 = vx * vx + vyz2;
+        if (dist2 < params.splatRadius2) {
+          let t = 1.0 - dist2 / params.splatRadius2;
+          let w = t * t * t;
+          let idx = u32((iz * res * res + iy * res + ix) * 2);
+          atomicAdd(&densityField[idx], u32(w * f32(FIXED_POINT_SCALE)));
+          atomicAdd(&densityField[idx + 1u], u32(w * foamSignal * f32(FIXED_POINT_SCALE)));
+        }
+      }
+    }
+  }
+}
+
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
@@ -54,44 +97,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let kineticSurface = velocities[i].w;
   let foamSignal = impact * 5.0 + trappedAir * 3.0 + kineticSurface * 0.5;
 
-  let res = i32(params.fieldResolution);
-  let resM1 = res - 1;
-  let r = i32(params.splatRadiusCells);
+  splatAt(pos, foamSignal);
 
-  let cx = i32(floor((pos.x - params.fieldDomainMinX) * params.fieldInvCellSize));
-  let cy = i32(floor((pos.y - params.fieldDomainMinY) * params.fieldInvCellSize));
-  let cz = i32(floor((pos.z - params.fieldDomainMinZ) * params.fieldInvCellSize));
+  // Mirror splat across container walls to fill density at boundaries
+  let splatR = sqrt(params.splatRadius2);
 
-  let x0 = max(0, cx - r);
-  let x1 = min(resM1, cx + r);
-  let y0 = max(0, cy - r);
-  let y1 = min(resM1, cy + r);
-  let z0 = max(0, cz - r);
-  let z1 = min(resM1, cz + r);
-
-  for (var iz = z0; iz <= z1; iz++) {
-    let vz = (f32(iz) + 0.5) * params.fieldCellSize + params.fieldDomainMinZ - pos.z;
-    let vz2 = vz * vz;
-    if (vz2 >= params.splatRadius2) {
-      continue;
-    }
-    for (var iy = y0; iy <= y1; iy++) {
-      let vy = (f32(iy) + 0.5) * params.fieldCellSize + params.fieldDomainMinY - pos.y;
-      let vyz2 = vy * vy + vz2;
-      if (vyz2 >= params.splatRadius2) {
-        continue;
-      }
-      for (var ix = x0; ix <= x1; ix++) {
-        let vx = (f32(ix) + 0.5) * params.fieldCellSize + params.fieldDomainMinX - pos.x;
-        let dist2 = vx * vx + vyz2;
-        if (dist2 < params.splatRadius2) {
-          let t = 1.0 - dist2 / params.splatRadius2;
-          let w = t * t * t;
-          let idx = u32((iz * res * res + iy * res + ix) * 2);
-          atomicAdd(&densityField[idx], u32(w * f32(FIXED_POINT_SCALE)));
-          atomicAdd(&densityField[idx + 1u], u32(w * foamSignal * f32(FIXED_POINT_SCALE)));
-        }
-      }
-    }
+  if (pos.x > params.halfContainerX - splatR) {
+    splatAt(vec3(2.0 * params.halfContainerX - pos.x, pos.y, pos.z), foamSignal);
+  }
+  if (pos.x < -params.halfContainerX + splatR) {
+    splatAt(vec3(-2.0 * params.halfContainerX - pos.x, pos.y, pos.z), foamSignal);
+  }
+  if (pos.z > params.halfContainerZ - splatR) {
+    splatAt(vec3(pos.x, pos.y, 2.0 * params.halfContainerZ - pos.z), foamSignal);
+  }
+  if (pos.z < -params.halfContainerZ + splatR) {
+    splatAt(vec3(pos.x, pos.y, -2.0 * params.halfContainerZ - pos.z), foamSignal);
+  }
+  if (pos.y < splatR) {
+    splatAt(vec3(pos.x, -pos.y, pos.z), foamSignal);
+  }
+  if (pos.y > params.containerMaxY - splatR) {
+    splatAt(vec3(pos.x, 2.0 * params.containerMaxY - pos.y, pos.z), foamSignal);
   }
 }

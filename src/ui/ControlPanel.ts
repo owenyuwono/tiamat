@@ -122,10 +122,19 @@ export class ControlPanel {
       fxaaBtn.textContent = this.config.fxaaEnabled ? 'FXAA: On' : 'FXAA: Off';
     });
 
+    const debugBtn = document.createElement('button');
+    debugBtn.className = 'panel-btn';
+    debugBtn.textContent = 'Debug: Off';
+    debugBtn.addEventListener('click', () => {
+      this.config.debugMode = !this.config.debugMode;
+      debugBtn.textContent = this.config.debugMode ? 'Debug: On' : 'Debug: Off';
+    });
+
     btnRow.appendChild(this.pauseBtn);
     btnRow.appendChild(resetBtn);
     btnRow.appendChild(lightBtn);
     btnRow.appendChild(fxaaBtn);
+    btnRow.appendChild(debugBtn);
 
     const hint = document.createElement('div');
     hint.style.cssText = 'font-size:10px;color:oklch(50% 0.01 260);text-align:center;margin-top:6px;';

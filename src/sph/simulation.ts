@@ -205,12 +205,15 @@ export class SPHSimulation {
         }
       }
 
-      // Mirror particle contributions at boundaries
+      // Mirror particle contributions at boundaries — scaled to avoid over-compensation
+      let mirrorRho = 0;
+      let wallCount = 0;
       const addMirror = (dist: number) => {
         const r2 = 4 * dist * dist;
         if (r2 < H2) {
           const d = H2 - r2;
-          rho += mass * POLY6_COEFF * d * d * d;
+          mirrorRho += mass * POLY6_COEFF * d * d * d;
+          wallCount++;
         }
       };
       if (yi < H) addMirror(yi);
@@ -219,6 +222,9 @@ export class SPHSimulation {
       if (halfX - xi < H) addMirror(halfX - xi);
       if (zi + halfZ < H) addMirror(zi + halfZ);
       if (halfZ - zi < H) addMirror(halfZ - zi);
+      if (wallCount > 0) {
+        rho += mirrorRho * (0.4 / Math.max(wallCount, 1));
+      }
 
       this.density[i] = rho;
       // Tait equation with negative pressure clamping (gamma=7)

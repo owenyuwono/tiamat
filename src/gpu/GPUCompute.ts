@@ -446,6 +446,8 @@ export class GPUCompute {
   getSprayBuffer(): GPUBuffer { return this.sprayBuffer; }
   getObstaclesUniformBuffer(): GPUBuffer { return this.obstaclesUniformBuffer; }
   getFieldResolution(): number { return this.fieldResolution; }
+  getPositionsBuffer(): GPUBuffer { return this.positionsBuffer; }
+  getDensityPressureBuffer(): GPUBuffer { return this.densityPressureBuffer; }
 
   async readObstacleForces(): Promise<Int32Array> {
     await this.obstacleForcesStaging.mapAsync(GPUMapMode.READ);

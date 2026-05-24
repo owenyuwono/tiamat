@@ -30,8 +30,9 @@ async function init() {
   const config = createDefaultConfig();
   const containerSize = CONTAINER_SIZE;
   const fieldResolution = FIELD_RESOLUTION;
-  const domainMin = new THREE.Vector3(-containerSize.x / 2, 0, -containerSize.z / 2);
-  const domainMax = new THREE.Vector3(containerSize.x / 2, containerSize.y, containerSize.z / 2);
+  const splatPad = config.splatRadius;
+  const domainMin = new THREE.Vector3(-containerSize.x / 2 - splatPad, -splatPad, -containerSize.z / 2 - splatPad);
+  const domainMax = new THREE.Vector3(containerSize.x / 2 + splatPad, containerSize.y + splatPad, containerSize.z / 2 + splatPad);
 
   let gpuCompute: GPUCompute | null = null;
   let flipCompute: FLIPCompute | null = null;
@@ -94,6 +95,7 @@ async function init() {
     }
 
     gpuCompute.uploadInitialPositions(savedPosX, savedPosY, savedPosZ);
+    webgpuRenderer.initDebugRenderer(gpuCompute.getPositionsBuffer(), gpuCompute.getDensityPressureBuffer(), config.particleCount);
     webgpuRenderer.initSprayRenderer(gpuCompute.getSprayBuffer());
     webgpuRenderer.setObstaclesBuffer(gpuCompute.getObstaclesUniformBuffer());
     webgpuRenderer.loadFloorTexture('/sand_diff.jpg');
@@ -230,6 +232,7 @@ async function init() {
       activeCompute.getParamsBuffer(),
       gpuCompute.getSprayBuffer(),
     );
+    webgpuRenderer.rebindDebugBuffers(gpuCompute.getPositionsBuffer(), gpuCompute.getDensityPressureBuffer(), count);
 
     profiler?.setParticleCount(count);
   }
@@ -297,6 +300,7 @@ async function init() {
     if (activeCompute && webgpuRenderer) {
       webgpuRenderer.setLightEnabled(config.lightEnabled);
       webgpuRenderer.setFxaaEnabled(config.fxaaEnabled);
+      webgpuRenderer.setDebugMode(config.debugMode);
       activeCompute.updateSimConfig(config);
       webgpuRenderer.setThreshold(config.threshold);
 

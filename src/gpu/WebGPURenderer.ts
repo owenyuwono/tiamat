@@ -6,6 +6,7 @@ import floorShader from './shaders/floor.wgsl?raw';
 import sprayRenderShader from './shaders/sprayRender.wgsl?raw';
 import fxaaShader from './shaders/fxaa.wgsl?raw';
 import causticsShader from './shaders/caustics.wgsl?raw';
+import debugParticlesShader from './shaders/debugParticles.wgsl?raw';
 import { generateWorleyNoise } from './generateWorleyNoise';
 
 export class WebGPURenderer {
@@ -78,6 +79,14 @@ export class WebGPURenderer {
   private _camRight = new THREE.Vector3();
   private _camUp = new THREE.Vector3();
   private _camFwd = new THREE.Vector3();
+
+  private debugMode = false;
+  private debugPipeline: GPURenderPipeline | null = null;
+  private debugBindGroupLayout: GPUBindGroupLayout | null = null;
+  private debugBindGroup: GPUBindGroup | null = null;
+  private debugUniformBuffer: GPUBuffer;
+  private debugUniformData: Float32Array;
+  private debugParticleCount = 0;
 
   private static readonly LIGHT_DIR = new THREE.Vector3(5, 8, 5).normalize();
 
@@ -159,6 +168,13 @@ export class WebGPURenderer {
     // Spray render uniform buffer (96 bytes: mat4 VP + vec3 camRight + f32 pointSize + vec3 camUp + pad)
     this.sprayRenderUniformData = new Float32Array(24);
     this.sprayRenderUniformBuffer = device.createBuffer({
+      size: 96,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // Debug particles uniform buffer (96 bytes: mat4 VP + vec3 camRight + f32 pointSize + vec3 camUp + u32 particleCount)
+    this.debugUniformData = new Float32Array(24);
+    this.debugUniformBuffer = device.createBuffer({
       size: 96,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
@@ -459,6 +475,60 @@ export class WebGPURenderer {
   }
 
   encodeFrame(encoder: GPUCommandEncoder, camera: THREE.PerspectiveCamera, profiler?: GPUProfiler | null, time = 0) {
+    this._vp.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    camera.getWorldPosition(this._camPos);
+    camera.matrixWorld.extractBasis(this._camRight, this._camUp, this._camFwd);
+
+    if (this.debugMode && this.debugPipeline && this.debugBindGroup) {
+      // Debug mode: skip raymarching, render particles as colored dots
+      const vpE = this._vp.elements;
+      for (let i = 0; i < 16; i++) this.debugUniformData[i] = vpE[i];
+      this.debugUniformData[16] = this._camRight.x;
+      this.debugUniformData[17] = this._camRight.y;
+      this.debugUniformData[18] = this._camRight.z;
+      this.debugUniformData[19] = 0.008;
+      this.debugUniformData[20] = this._camUp.x;
+      this.debugUniformData[21] = this._camUp.y;
+      this.debugUniformData[22] = this._camUp.z;
+      const u32View = new Uint32Array(this.debugUniformData.buffer);
+      u32View[23] = this.debugParticleCount;
+      this.device.queue.writeBuffer(this.debugUniformBuffer, 0, this.debugUniformData);
+
+      // Floor uniforms
+      for (let i = 0; i < 16; i++) this.floorUniformData[i] = vpE[i];
+      this.floorUniformData[19] = time;
+      this.device.queue.writeBuffer(this.floorUniformBuffer, 0, this.floorUniformData);
+
+      const canvasView = this.context.getCurrentTexture().createView();
+      const depthView = this.depthTexture.createView();
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: canvasView,
+          clearValue: { r: 0x87 / 255, g: 0xCE / 255, b: 0xEB / 255, a: 1.0 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        }],
+        depthStencilAttachment: {
+          view: depthView,
+          depthClearValue: 1.0,
+          depthLoadOp: 'clear',
+          depthStoreOp: 'store',
+        },
+      });
+
+      pass.setPipeline(this.floorPipeline);
+      pass.setBindGroup(0, this.floorBindGroup);
+      pass.setVertexBuffer(0, this.floorVertexBuffer);
+      pass.draw(this.floorVertexCount);
+
+      pass.setPipeline(this.debugPipeline);
+      pass.setBindGroup(0, this.debugBindGroup);
+      pass.draw(4, this.debugParticleCount);
+
+      pass.end();
+      return;
+    }
+
     // Buffer-to-texture compute pass
     const res = this.fieldResolution;
     const wg = Math.ceil(res / 4);
@@ -491,7 +561,6 @@ export class WebGPURenderer {
     }
     this.renderUniformData[36] = this.width;
     this.renderUniformData[37] = this.height;
-    camera.getWorldPosition(this._camPos);
     this.renderUniformData[40] = this._camPos.x;
     this.renderUniformData[41] = this._camPos.y;
     this.renderUniformData[42] = this._camPos.z;
@@ -499,7 +568,6 @@ export class WebGPURenderer {
     this.device.queue.writeBuffer(this.renderUniformBuffer, 0, this.renderUniformData);
 
     // Update floor uniforms (viewProjection matrix + time)
-    this._vp.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     const vpE = this._vp.elements;
     for (let i = 0; i < 16; i++) {
       this.floorUniformData[i] = vpE[i];
@@ -703,6 +771,58 @@ export class WebGPURenderer {
     });
   }
 
+  initDebugRenderer(positionsBuffer: GPUBuffer, densityPressureBuffer: GPUBuffer, particleCount: number) {
+    this.debugParticleCount = particleCount;
+    const module = this.device.createShaderModule({ code: debugParticlesShader });
+    this.debugBindGroupLayout = this.device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+      ],
+    });
+    this.debugPipeline = this.device.createRenderPipeline({
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.debugBindGroupLayout] }),
+      vertex: { module, entryPoint: 'vs_main' },
+      fragment: {
+        module,
+        entryPoint: 'fs_main',
+        targets: [{ format: this.format }],
+      },
+      primitive: { topology: 'triangle-strip' },
+      depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
+    });
+    this.debugBindGroup = this.device.createBindGroup({
+      layout: this.debugBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.debugUniformBuffer } },
+        { binding: 1, resource: { buffer: positionsBuffer } },
+        { binding: 2, resource: { buffer: densityPressureBuffer } },
+      ],
+    });
+  }
+
+  rebindDebugBuffers(positionsBuffer: GPUBuffer, densityPressureBuffer: GPUBuffer, particleCount: number) {
+    this.debugParticleCount = particleCount;
+    if (!this.debugBindGroupLayout) return;
+    this.debugBindGroup = this.device.createBindGroup({
+      layout: this.debugBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.debugUniformBuffer } },
+        { binding: 1, resource: { buffer: positionsBuffer } },
+        { binding: 2, resource: { buffer: densityPressureBuffer } },
+      ],
+    });
+  }
+
+  setDebugMode(enabled: boolean) {
+    this.debugMode = enabled;
+  }
+
+  getDebugMode(): boolean {
+    return this.debugMode;
+  }
+
   rebindComputeBuffers(densityFieldBuffer: GPUBuffer, paramsBuffer: GPUBuffer, sprayBuffer?: GPUBuffer) {
     this.bufferToTexBindGroup = this.device.createBindGroup({
       layout: this.bufferToTexBindGroupLayout,
@@ -737,5 +857,6 @@ export class WebGPURenderer {
     this.causticsUniformBuffer.destroy();
     this.fxaaColorTexture.destroy();
     this.fxaaUniformBuffer.destroy();
+    this.debugUniformBuffer.destroy();
   }
 }

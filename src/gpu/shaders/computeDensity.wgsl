@@ -90,23 +90,38 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let yi = posI.y;
   let zi = posI.z;
 
+  // Mirror density at walls — scaled to avoid over-compensation
+  // (especially at corners where multiple walls compound)
+  var mirrorRho = 0.0;
+  var wallCount = 0.0;
+
   if (yi < params.H) {
-    rho += mirrorDensityContrib(yi, params.mass, params.poly6Coeff, params.H2);
+    mirrorRho += mirrorDensityContrib(yi, params.mass, params.poly6Coeff, params.H2);
+    wallCount += 1.0;
   }
   if (params.containerMaxY - yi < params.H) {
-    rho += mirrorDensityContrib(params.containerMaxY - yi, params.mass, params.poly6Coeff, params.H2);
+    mirrorRho += mirrorDensityContrib(params.containerMaxY - yi, params.mass, params.poly6Coeff, params.H2);
+    wallCount += 1.0;
   }
   if (xi + params.halfContainerX < params.H) {
-    rho += mirrorDensityContrib(xi + params.halfContainerX, params.mass, params.poly6Coeff, params.H2);
+    mirrorRho += mirrorDensityContrib(xi + params.halfContainerX, params.mass, params.poly6Coeff, params.H2);
+    wallCount += 1.0;
   }
   if (params.halfContainerX - xi < params.H) {
-    rho += mirrorDensityContrib(params.halfContainerX - xi, params.mass, params.poly6Coeff, params.H2);
+    mirrorRho += mirrorDensityContrib(params.halfContainerX - xi, params.mass, params.poly6Coeff, params.H2);
+    wallCount += 1.0;
   }
   if (zi + params.halfContainerZ < params.H) {
-    rho += mirrorDensityContrib(zi + params.halfContainerZ, params.mass, params.poly6Coeff, params.H2);
+    mirrorRho += mirrorDensityContrib(zi + params.halfContainerZ, params.mass, params.poly6Coeff, params.H2);
+    wallCount += 1.0;
   }
   if (params.halfContainerZ - zi < params.H) {
-    rho += mirrorDensityContrib(params.halfContainerZ - zi, params.mass, params.poly6Coeff, params.H2);
+    mirrorRho += mirrorDensityContrib(params.halfContainerZ - zi, params.mass, params.poly6Coeff, params.H2);
+    wallCount += 1.0;
+  }
+
+  if (wallCount > 0.0) {
+    rho += mirrorRho * (0.4 / max(wallCount, 1.0));
   }
 
   let ratio = rho / params.restDensity;
