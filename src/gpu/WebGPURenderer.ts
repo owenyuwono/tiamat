@@ -802,6 +802,10 @@ export class WebGPURenderer {
     });
   }
 
+  invalidateDebugBindings() {
+    this.debugBindGroup = null;
+  }
+
   rebindDebugBuffers(positionsBuffer: GPUBuffer, densityPressureBuffer: GPUBuffer, particleCount: number) {
     this.debugParticleCount = particleCount;
     if (!this.debugBindGroupLayout) return;

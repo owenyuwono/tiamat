@@ -207,6 +207,7 @@ async function init() {
     if (!gpuCompute || !webgpuRenderer) return;
     const device = gpuCompute.getDevice();
 
+    webgpuRenderer.invalidateDebugBindings();
     gpuCompute.dispose();
     if (flipCompute) flipCompute.dispose();
     if (eulerCompute) eulerCompute.dispose();
