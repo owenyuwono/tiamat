@@ -232,6 +232,7 @@ async function init() {
       activeCompute.getDensityFieldBuffer(),
       activeCompute.getParamsBuffer(),
       gpuCompute.getSprayBuffer(),
+      gpuCompute.getObstaclesUniformBuffer(),
     );
     webgpuRenderer.rebindDebugBuffers(gpuCompute.getPositionsBuffer(), gpuCompute.getDensityPressureBuffer(), count);
 

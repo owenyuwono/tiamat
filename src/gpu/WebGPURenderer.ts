@@ -827,7 +827,7 @@ export class WebGPURenderer {
     return this.debugMode;
   }
 
-  rebindComputeBuffers(densityFieldBuffer: GPUBuffer, paramsBuffer: GPUBuffer, sprayBuffer?: GPUBuffer) {
+  rebindComputeBuffers(densityFieldBuffer: GPUBuffer, paramsBuffer: GPUBuffer, sprayBuffer?: GPUBuffer, obstaclesBuffer?: GPUBuffer) {
     this.bufferToTexBindGroup = this.device.createBindGroup({
       layout: this.bufferToTexBindGroupLayout,
       entries: [
@@ -844,6 +844,9 @@ export class WebGPURenderer {
           { binding: 1, resource: { buffer: sprayBuffer } },
         ],
       });
+    }
+    if (obstaclesBuffer) {
+      this.setObstaclesBuffer(obstaclesBuffer);
     }
   }
 
