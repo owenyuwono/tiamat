@@ -1,4 +1,4 @@
-const MAX_TIMESTAMPS = 64;
+const MAX_TIMESTAMPS = 256;
 const SAMPLE_INTERVAL = 60;
 
 export interface GPUTimingEntry {
